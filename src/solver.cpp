@@ -213,23 +213,39 @@ using ld = double;
 using pii = std::pair<int, int>;
 using pll = std::pair<ll, ll>;
 
-using std::cin, std::cout, std::cerr, std::endl, std::string, std::vector;
+using std::cin, std::cout, std::cerr, std::endl, std::string, std::vector, std::array;
 
 
+
+constexpr int NN = 50;
+using Grid = array<array<char, NN>, NN>;
+
+static constexpr char USED = 'x';
+static constexpr int di[4] = { 0, 1, 0, -1 };
+static constexpr int dj[4] = { 1, 0, -1, 0 };
 
 struct Input;
 using InputPtr = std::shared_ptr<Input>;
 struct Input {
     int N, K;
-    vector<string> field;
+    Grid grid;
     Input(std::istream& in) {
         in >> N >> K;
-        field.resize(N);
-        in >> field;
+        memset(grid.data(), -1, sizeof(char) * NN * NN);
+        for (int i = 1; i <= N; i++) {
+            for (int j = 1; j <= N; j++) {
+                in >> grid[i][j];
+            }
+        }
     }
     string stringify() const {
         string res = format("%d %d\n", N, K);
-        for (const auto& s : field) res += s + '\n';
+        for (int i = 1; i <= N; i++) {
+            for (int j = 1; j <= N; j++) {
+                res += grid[i][j];
+            }
+            res += '\n';
+        }
         return res;
     }
 };
@@ -252,95 +268,69 @@ struct Result {
     Result(const vector<MoveAction>& move, const vector<ConnectAction>& con) : move(move), connect(con) {}
 };
 
+struct Solver;
+using SolverPtr = std::shared_ptr<Solver>;
 struct Solver {
-    static constexpr char USED = 'x';
-    static constexpr int DR[4] = { 0, 1, 0, -1 };
-    static constexpr int DC[4] = { 1, 0, -1, 0 };
 
     int N, K;
     int action_count_limit;
     std::mt19937 engine;
-    vector<string> field;
+    Grid grid;
 
-    Solver(InputPtr input)
-        : N(input->N), K(input->K), action_count_limit(K * 100), field(input->field) { engine.seed(0); }
+    Solver(InputPtr input) : N(input->N), K(input->K), action_count_limit(K * 100), grid(input->grid) { engine.seed(0); }
 
-    //Solver(int N, int K, const vector<string>& field, int seed = 0) :
-    //    N(N), K(K), action_count_limit(K * 100), field(field)
-    //{
-    //    engine.seed(seed);
-    //}
-
-    bool can_move(int row, int col, int dir) const
-    {
-        int nrow = row + DR[dir];
-        int ncol = col + DC[dir];
-        if (0 <= nrow && nrow < N && 0 <= ncol && ncol < N) {
-            return field[nrow][ncol] == '0';
-        }
-        return false;
+    bool can_move(int row, int col, int dir) const {
+        int nrow = row + di[dir];
+        int ncol = col + dj[dir];
+        return grid[nrow][ncol] == '0';
     }
 
-    vector<MoveAction> move(int move_limit = -1)
-    {
+    vector<MoveAction> move(int move_limit = -1) {
         vector<MoveAction> ret;
-        if (move_limit == -1) {
-            move_limit = K * 50;
-        }
-
+        if (move_limit == -1) move_limit = K * 50;
         for (int i = 0; i < move_limit; i++) {
-            int row = engine() % N;
-            int col = engine() % N;
+            int row = engine() % N + 1;
+            int col = engine() % N + 1;
             int dir = engine() % 4;
-            if (field[row][col] != '0' && can_move(row, col, dir)) {
-                std::swap(field[row][col], field[row + DR[dir]][col + DC[dir]]);
-                ret.emplace_back(row, col, row + DR[dir], col + DC[dir]);
+            if (grid[row][col] != '0' && can_move(row, col, dir)) {
+                std::swap(grid[row][col], grid[row + di[dir]][col + dj[dir]]);
+                ret.emplace_back(row, col, row + di[dir], col + dj[dir]);
                 action_count_limit--;
             }
         }
-
         return ret;
     }
 
-    bool can_connect(int row, int col, int dir) const
-    {
-        int nrow = row + DR[dir];
-        int ncol = col + DC[dir];
-        while (0 <= nrow && nrow < N && 0 <= ncol && ncol < N) {
-            if (field[nrow][ncol] == field[row][col]) {
-                return true;
-            }
-            else if (field[nrow][ncol] != '0') {
-                return false;
-            }
-            nrow += DR[dir];
-            ncol += DC[dir];
+    bool can_connect(int row, int col, int dir) const {
+        int nrow = row + di[dir];
+        int ncol = col + dj[dir];
+        while(grid[nrow][ncol] != -1) {
+            if (grid[nrow][ncol] == grid[row][col]) return true;
+            else if (grid[nrow][ncol] != '0') return false;
+            nrow += di[dir];
+            ncol += dj[dir];
         }
         return false;
     }
 
-    ConnectAction line_fill(int row, int col, int dir)
-    {
-        int nrow = row + DR[dir];
-        int ncol = col + DC[dir];
-        while (0 <= nrow && nrow < N && 0 <= ncol && ncol < N) {
-            if (field[nrow][ncol] == field[row][col]) {
-                return ConnectAction(row, col, nrow, ncol);
-            }
-            assert(field[nrow][ncol] == '0');
-            field[nrow][ncol] = USED;
-            nrow += DR[dir];
-            ncol += DC[dir];
+    ConnectAction line_fill(int row, int col, int dir) {
+        int nrow = row + di[dir];
+        int ncol = col + dj[dir];
+        while (grid[nrow][ncol] != -1) {
+            if (grid[nrow][ncol] == grid[row][col]) return ConnectAction(row, col, nrow, ncol);
+            assert(grid[nrow][ncol] == '0');
+            grid[nrow][ncol] = USED;
+            nrow += di[dir];
+            ncol += dj[dir];
         }
         assert(false);
     }
 
-    vector<ConnectAction> connect()
-    {
+    vector<ConnectAction> connect() {
         vector<ConnectAction> ret;
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < N; j++) {
-                if (field[i][j] != '0' && field[i][j] != 'x') {
+        for (int i = 1; i <= N; i++) {
+            for (int j = 1; j <= N; j++) {
+                if (grid[i][j] != '0' && grid[i][j] != 'x') {
                     for (int dir = 0; dir < 2; dir++) {
                         if (can_connect(i, j, dir)) {
                             ret.push_back(line_fill(i, j, dir));
@@ -356,14 +346,14 @@ struct Solver {
         return ret;
     }
 
-    Result solve()
-    {
+    Result solve() {
         // create random moves
         auto moves = move();
         // from each computer, connect to right and/or bottom if it will reach the same type
         auto connects = connect();
         return Result(moves, connects);
     }
+
 };
 
 struct UnionFind {
@@ -398,7 +388,7 @@ struct UnionFind {
 int calc_score(InputPtr input, const Result& res) {
 
     auto N = input->N;
-    auto field = input->field;
+    auto field = input->grid;
     for (auto r : res.move) {
         assert(field[r.before_row][r.before_col] != '0');
         assert(field[r.after_row][r.after_col] == '0');
@@ -412,8 +402,8 @@ int calc_score(InputPtr input, const Result& res) {
     }
 
     vector<pii> computers;
-    for (int i = 0; i < N; i++) {
-        for (int j = 0; j < N; j++) {
+    for (int i = 1; i <= N; i++) {
+        for (int j = 1; j <= N; j++) {
             if (field[i][j] != '0') {
                 computers.emplace_back(i, j);
             }
@@ -434,17 +424,16 @@ int calc_score(InputPtr input, const Result& res) {
     return std::max(score, 0);
 }
 
-void print_answer(std::ostream& out, const Result& res)
-{
+void print_answer(std::ostream& out, const Result& res) {
     out << res.move.size() << endl;
     for (auto m : res.move) {
-        out << m.before_row << " " << m.before_col << " "
-            << m.after_row << " " << m.after_col << endl;
+        out << m.before_row - 1 << " " << m.before_col - 1 << " "
+            << m.after_row - 1 << " " << m.after_col - 1 << endl;
     }
     out << res.connect.size() << endl;
     for (auto m : res.connect) {
-        out << m.c1_row << " " << m.c1_col << " "
-            << m.c2_row << " " << m.c2_col << endl;
+        out << m.c1_row - 1 << " " << m.c1_col - 1 << " "
+            << m.c2_row - 1 << " " << m.c2_col - 1 << endl;
     }
 }
 
@@ -492,8 +481,8 @@ int main(int argc, char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools\in\0000.txt)");
-    std::ofstream ofs(R"(tools\out\0000.txt)");
+    std::ifstream ifs(R"(tools\in\0003.txt)");
+    std::ofstream ofs(R"(tools\out\0003.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
@@ -501,15 +490,16 @@ int main(int argc, char** argv) {
     std::ostream& out = cout;
 #endif
 
-#if _MSC_VER
+#if 1
     batch_test();
 #else
-    auto input = std::make_shared<Input>(in);
-    Solver solver(input);
+    auto input = std::make_shared<Input2>(in);
+    Solver2 solver(input);
     auto ret = solver.solve();
+
     dump(calc_score(input, ret));
 
-    print_answer(out, ret);
+    //print_answer(out, ret);
 #endif
 
     return 0;
