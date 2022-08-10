@@ -218,9 +218,10 @@ using std::cin, std::cout, std::cerr, std::endl, std::string, std::vector, std::
 
 
 constexpr int NN = 50;
-using Grid = array<array<char, NN>, NN>;
+constexpr int KK = 500;
+template<typename T> using Grid = array<array<T, NN>, NN>;
 
-static constexpr char USED = 'x';
+static constexpr char USED = -1;
 static constexpr int di[4] = { 0, 1, 0, -1 };
 static constexpr int dj[4] = { 1, 0, -1, 0 };
 
@@ -228,13 +229,14 @@ struct Input;
 using InputPtr = std::shared_ptr<Input>;
 struct Input {
     int N, K;
-    Grid grid;
+    Grid<char> grid;
     Input(std::istream& in) {
         in >> N >> K;
         memset(grid.data(), -1, sizeof(char) * NN * NN);
         for (int i = 1; i <= N; i++) {
             for (int j = 1; j <= N; j++) {
                 in >> grid[i][j];
+                grid[i][j] -= '0';
             }
         }
     }
@@ -242,7 +244,7 @@ struct Input {
         string res = format("%d %d\n", N, K);
         for (int i = 1; i <= N; i++) {
             for (int j = 1; j <= N; j++) {
-                res += grid[i][j];
+                res += char(grid[i][j] + '0');
             }
             res += '\n';
         }
@@ -268,97 +270,159 @@ struct Result {
     Result(const vector<MoveAction>& move, const vector<ConnectAction>& con) : move(move), connect(con) {}
 };
 
+struct UnionFind {
+    vector<int> data;
+
+    UnionFind() = default;
+
+    explicit UnionFind(size_t sz) : data(sz, -1) {}
+
+    bool unite(int x, int y) {
+        x = find(x), y = find(y);
+        if (x == y) return false;
+        if (data[x] > data[y]) std::swap(x, y);
+        data[x] += data[y];
+        data[y] = x;
+        return true;
+    }
+
+    int find(int k) {
+        if (data[k] < 0) return (k);
+        return data[k] = find(data[k]);
+    }
+
+    int size(int k) {
+        return -data[find(k)];
+    }
+
+    bool same(int x, int y) {
+        return find(x) == find(y);
+    }
+
+    vector<vector<int>> groups() {
+        int n = (int)data.size();
+        vector< vector< int > > ret(n);
+        for (int i = 0; i < n; i++) {
+            ret[find(i)].emplace_back(i);
+        }
+        ret.erase(remove_if(begin(ret), end(ret), [&](const vector< int >& v) {
+            return v.empty();
+            }), ret.end());
+        return ret;
+    }
+};
+
+struct Cell {
+    int id;
+    int i, j;
+    int color;
+    Cell* next[4];
+    Cell(int id = -1, int i = -1, int j = -1, int color = -1) : id(id), i(i), j(j), color(color), next() {}
+    string stringify() const {
+        return format("Cell [id=%d, i=%d, j=%d, color=%d]", id, i, j, color);
+    }
+};
+
+struct LinkedList2D {
+
+    int N;
+    int V;
+    Cell head;
+    Cell cells[KK];
+    Grid<Cell*> grid;
+
+    LinkedList2D(int N, const Grid<char>& g) : N(N), V(0), head(), cells(), grid() {
+        for (auto& v : grid) std::fill(v.begin(), v.end(), &head);
+        for (int i = 1; i <= N; i++) {
+            for (int j = 1; j <= N; j++) {
+                if (g[i][j]) {
+                    cells[V] = Cell(V, i, j, g[i][j]);
+                    grid[i][j] = &cells[V];
+                    V++;
+                }
+                else {
+                    grid[i][j] = nullptr;
+                }
+            }
+        }
+        for (auto& cell : cells) {
+            for (int d = 0; d < 4; d++) {
+                cell.next[d] = search(cell.i, cell.j, d);
+            }
+        }
+        eval();
+    }
+
+    inline Cell* search(int i, int j, int d) const {
+        i += di[d]; j += dj[d];
+        while (!grid[i][j]) i += di[d], j += dj[d];
+        return grid[i][j];
+    }
+
+    inline Cell* search(Cell* c, int d) const {
+        return search(c->i, c->j, d);
+    }
+
+    int eval() const {
+        bool used[KK] = {};
+        int score = 0;
+        for (const auto& sc : cells) {
+            if (used[sc.id]) continue;
+            int nc = 0;
+            std::queue<const Cell*> qu({ &sc });
+            used[sc.id] = true;
+            nc++;
+            while (!qu.empty()) {
+                auto u = qu.front(); qu.pop();
+                for (int d = 0; d < 4; d++) {
+                    auto v = u->next[d];
+                    if (!used[v->id] && v->color == u->color) {
+                        qu.push(v);
+                        used[v->id] = true;
+                        nc++;
+                    }
+                }
+            }
+            score += nc * nc;
+            dump(nc, score);
+        }
+        return score;
+    }
+
+    void print() const {
+        for (int i = 0; i <= N + 1; i++) {
+            for (int j = 0; j <= N + 1; j++) {
+                if (grid[i][j] == &head) fprintf(stderr, "#");
+                else if (grid[i][j]) fprintf(stderr, "%d", grid[i][j]->color);
+                else fprintf(stderr, " ");
+            }
+            fprintf(stderr, "\n");
+        }
+    }
+
+};
+
 struct Solver;
 using SolverPtr = std::shared_ptr<Solver>;
 struct Solver {
 
     int N, K;
     int action_count_limit;
-    std::mt19937 engine;
-    Grid grid;
+    Grid<char> grid;
 
-    Solver(InputPtr input) : N(input->N), K(input->K), action_count_limit(K * 100), grid(input->grid) { engine.seed(0); }
-
-    bool can_move(int row, int col, int dir) const {
-        int nrow = row + di[dir];
-        int ncol = col + dj[dir];
-        return grid[nrow][ncol] == '0';
-    }
-
-    vector<MoveAction> move(int move_limit = -1) {
-        vector<MoveAction> ret;
-        if (move_limit == -1) move_limit = K * 50;
-        for (int i = 0; i < move_limit; i++) {
-            int row = engine() % N + 1;
-            int col = engine() % N + 1;
-            int dir = engine() % 4;
-            if (grid[row][col] != '0' && can_move(row, col, dir)) {
-                std::swap(grid[row][col], grid[row + di[dir]][col + dj[dir]]);
-                ret.emplace_back(row, col, row + di[dir], col + dj[dir]);
-                action_count_limit--;
-            }
-        }
-        return ret;
-    }
-
-    bool can_connect(int row, int col, int dir) const {
-        int nrow = row + di[dir];
-        int ncol = col + dj[dir];
-        while(grid[nrow][ncol] != -1) {
-            if (grid[nrow][ncol] == grid[row][col]) return true;
-            else if (grid[nrow][ncol] != '0') return false;
-            nrow += di[dir];
-            ncol += dj[dir];
-        }
-        return false;
-    }
-
-    ConnectAction line_fill(int row, int col, int dir) {
-        int nrow = row + di[dir];
-        int ncol = col + dj[dir];
-        while (grid[nrow][ncol] != -1) {
-            if (grid[nrow][ncol] == grid[row][col]) return ConnectAction(row, col, nrow, ncol);
-            assert(grid[nrow][ncol] == '0');
-            grid[nrow][ncol] = USED;
-            nrow += di[dir];
-            ncol += dj[dir];
-        }
-        assert(false);
-    }
-
-    vector<ConnectAction> connect() {
-        vector<ConnectAction> ret;
-        for (int i = 1; i <= N; i++) {
-            for (int j = 1; j <= N; j++) {
-                if (grid[i][j] != '0' && grid[i][j] != 'x') {
-                    for (int dir = 0; dir < 2; dir++) {
-                        if (can_connect(i, j, dir)) {
-                            ret.push_back(line_fill(i, j, dir));
-                            action_count_limit--;
-                            if (action_count_limit <= 0) {
-                                return ret;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return ret;
-    }
+    Solver(InputPtr input) : N(input->N), K(input->K), action_count_limit(K * 100), grid(input->grid) {}
 
     Result solve() {
-        // create random moves
-        auto moves = move();
-        // from each computer, connect to right and/or bottom if it will reach the same type
-        auto connects = connect();
-        return Result(moves, connects);
+
+        LinkedList2D ll2d(N, grid);
+        return Result{ {},{} };
     }
 
 };
 
-struct UnionFind {
+struct UnionFind_ {
     std::map<pii, pii> parent;
-    UnionFind() :parent() {}
+    UnionFind_() :parent() {}
 
     pii find(pii x)
     {
@@ -390,12 +454,12 @@ int calc_score(InputPtr input, const Result& res) {
     auto N = input->N;
     auto field = input->grid;
     for (auto r : res.move) {
-        assert(field[r.before_row][r.before_col] != '0');
-        assert(field[r.after_row][r.after_col] == '0');
+        assert(field[r.before_row][r.before_col]);
+        assert(!field[r.after_row][r.after_col]);
         std::swap(field[r.before_row][r.before_col], field[r.after_row][r.after_col]);
     }
 
-    UnionFind uf;
+    UnionFind_ uf;
     for (auto r : res.connect) {
         pii p1(r.c1_row, r.c1_col), p2(r.c2_row, r.c2_col);
         uf.unite(p1, p2);
@@ -404,7 +468,7 @@ int calc_score(InputPtr input, const Result& res) {
     vector<pii> computers;
     for (int i = 1; i <= N; i++) {
         for (int j = 1; j <= N; j++) {
-            if (field[i][j] != '0') {
+            if (field[i][j]) {
                 computers.emplace_back(i, j);
             }
         }
@@ -490,16 +554,15 @@ int main(int argc, char** argv) {
     std::ostream& out = cout;
 #endif
 
-#if 1
+#if 0
     batch_test();
 #else
-    auto input = std::make_shared<Input2>(in);
-    Solver2 solver(input);
+    auto input = std::make_shared<Input>(in);
+    cerr << *input << endl;
+    Solver solver(input);
     auto ret = solver.solve();
-
     dump(calc_score(input, ret));
-
-    //print_answer(out, ret);
+    print_answer(out, ret);
 #endif
 
     return 0;
