@@ -316,8 +316,7 @@ struct Cell {
     int id;
     int i, j;
     int color;
-    Cell* next[4];
-    Cell(int id = -1, int i = -1, int j = -1, int color = -1) : id(id), i(i), j(j), color(color), next() {}
+    Cell(int id = -1, int i = -1, int j = -1, int color = -1) : id(id), i(i), j(j), color(color) {}
     string stringify() const {
         return format("Cell [id=%d, i=%d, j=%d, color=%d]", id, i, j, color);
     }
@@ -325,66 +324,71 @@ struct Cell {
 
 struct LinkedList2D {
 
+    static constexpr short WALL = -1;
+    static constexpr short EMPTY = 0;
+
     int N;
     int V;
-    Cell head;
-    Cell cells[KK];
-    Grid<Cell*> grid;
+    Cell cells[KK + 1]; // 1-indexed
+    Grid<short> grid; // id
+    short nexts[KK + 1][4];
 
-    LinkedList2D(int N, const Grid<char>& g) : N(N), V(0), head(), cells(), grid() {
-        for (auto& v : grid) std::fill(v.begin(), v.end(), &head);
+    LinkedList2D(int N, const Grid<char>& g) : N(N), V(0) {
+        memset(cells, -1, sizeof(Cell) * (KK + 1));
+        memset(grid.data(), -1, sizeof(short) * NN * NN);
+        memset(nexts, -1, sizeof(short) * (KK + 1) * 4);
         for (int i = 1; i <= N; i++) {
             for (int j = 1; j <= N; j++) {
                 if (g[i][j]) {
-                    cells[V] = Cell(V, i, j, g[i][j]);
-                    grid[i][j] = &cells[V];
                     V++;
+                    cells[V] = Cell(V, i, j, g[i][j]);
+                    grid[i][j] = V;
                 }
                 else {
-                    grid[i][j] = nullptr;
+                    grid[i][j] = EMPTY;
                 }
             }
         }
-        for (auto& cell : cells) {
+        for (int i = 1; i <= V; i++) {
             for (int d = 0; d < 4; d++) {
-                cell.next[d] = search(cell.i, cell.j, d);
+                nexts[cells[i].id][d] = search(cells[i], d);
             }
         }
-        eval();
+        dump(eval());
+        print();
     }
 
-    inline Cell* search(int i, int j, int d) const {
+    inline short search(int i, int j, int d) const {
         i += di[d]; j += dj[d];
         while (!grid[i][j]) i += di[d], j += dj[d];
         return grid[i][j];
     }
 
-    inline Cell* search(Cell* c, int d) const {
-        return search(c->i, c->j, d);
+    inline short search(const Cell& c, int d) const {
+        return search(c.i, c.j, d);
     }
 
     int eval() const {
-        bool used[KK] = {};
+        bool used[KK + 1] = {};
         int score = 0;
-        for (const auto& sc : cells) {
-            if (used[sc.id]) continue;
+        for (int s = 1; s <= V; s++) {
+            const auto& sc = cells[s];
+            if (used[s]) continue;
             int nc = 0;
-            std::queue<const Cell*> qu({ &sc });
-            used[sc.id] = true;
+            std::queue<int> qu({ s });
+            used[s] = true;
             nc++;
             while (!qu.empty()) {
                 auto u = qu.front(); qu.pop();
-                for (int d = 0; d < 4; d++) {
-                    auto v = u->next[d];
-                    if (!used[v->id] && v->color == u->color) {
+                for (int v : nexts[u]) {
+                    if (v != -1 && !used[v] && cells[u].color == cells[v].color) {
                         qu.push(v);
-                        used[v->id] = true;
+                        used[v] = true;
                         nc++;
                     }
                 }
             }
-            score += nc * nc;
-            dump(nc, score);
+            score += nc * (nc - 1) / 2;
         }
         return score;
     }
@@ -392,8 +396,8 @@ struct LinkedList2D {
     void print() const {
         for (int i = 0; i <= N + 1; i++) {
             for (int j = 0; j <= N + 1; j++) {
-                if (grid[i][j] == &head) fprintf(stderr, "#");
-                else if (grid[i][j]) fprintf(stderr, "%d", grid[i][j]->color);
+                if (grid[i][j] == WALL) fprintf(stderr, "#");
+                else if (grid[i][j]) fprintf(stderr, "%d", cells[grid[i][j]].color);
                 else fprintf(stderr, " ");
             }
             fprintf(stderr, "\n");
