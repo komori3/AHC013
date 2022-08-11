@@ -267,7 +267,7 @@ struct ConnectAction {
 struct Result {
     vector<MoveAction> move;
     vector<ConnectAction> connect;
-    Result(const vector<MoveAction>& move, const vector<ConnectAction>& con) : move(move), connect(con) {}
+    Result(const vector<MoveAction>& move = {}, const vector<ConnectAction>& con = {}) : move(move), connect(con) {}
 };
 
 struct UnionFind {
@@ -327,7 +327,7 @@ struct State {
     static constexpr short WALL = -1;
     static constexpr short EMPTY = 0;
 
-    int N;
+    int N, K;
     int V;
     Cell cells[KK + 1]; // 1-indexed
     Grid<short> grid; // id
@@ -338,7 +338,7 @@ struct State {
 
     State() {}
 
-    State(int N, const Grid<char>& g) : N(N), V(0), M(0) {
+    State(int N, int K, const Grid<char>& g) : N(N), K(K), V(0), M(0) {
         memset(cells, -1, sizeof(Cell) * (KK + 1));
         memset(grid.data(), -1, sizeof(short) * NN * NN);
         memset(nexts, -1, sizeof(short) * (KK + 1) * 4);
@@ -355,6 +355,10 @@ struct State {
                 }
             }
         }
+        update();
+    }
+
+    void update() {
         for (int i = 1; i <= V; i++) {
             for (int d = 0; d < 4; d++) {
                 nexts[cells[i].id][d] = search(cells[i], d);
@@ -443,8 +447,91 @@ struct State {
         return score;
     }
 
-    Result post_process() {
-        // TODO
+    vector<int> get_max_cluster() const {
+        bool used[KK + 1] = {};
+        int cluster_id[KK + 1] = {};
+        int id = 0, max_id = -1, max_nc = -1;
+        for (int s = 1; s <= V; s++) {
+            const auto& sc = cells[s];
+            if (used[s]) continue;
+            id++;
+            int nc = 1;
+            std::queue<int> qu({ s });
+            used[s] = true;
+            cluster_id[s] = id;
+            while (!qu.empty()) {
+                auto u = qu.front(); qu.pop();
+                for (int v : nexts[u]) {
+                    if (v != -1 && !used[v] && cells[u].color == cells[v].color) {
+                        qu.push(v);
+                        used[v] = true;
+                        cluster_id[v] = id;
+                        nc++;
+                    }
+                }
+            }
+            if (chmax(max_nc, nc)) {
+                max_id = id;
+            }
+        }
+        vector<int> res;
+        for (int i = 1; i <= V; i++) if (cluster_id[i] == max_id) res.push_back(i);
+        return res;
+    }
+
+    inline int get_dir(int i1, int j1, int i2, int j2) const {
+        if (j1 < j2) return 0;
+        if (i1 < i2) return 1;
+        if (j2 < j1) return 2;
+        return 3;
+    }
+
+    void connect(const Cell& c1, const Cell& c2) {
+        int d = get_dir(c1.i, c1.j, c2.i, c2.j);
+        int i = c1.i, j = c1.j;
+        while (i != c2.i || j != c2.j) {
+            grid[i][j] = WALL;
+            i += di[d]; j += dj[d];
+        }
+        grid[i][j] = WALL;
+    }
+
+    int greedy_connect(int s, vector<ConnectAction>& conn, int& rem) {
+        std::queue<int> qu({ s });
+        int nc = 1;
+        while (!qu.empty() && rem) {
+            int u = qu.front(); qu.pop();
+            const auto& uc = cells[u];
+            for (int v : nexts[u]) {
+                if (!rem || v == -1) continue;
+                const auto& vc = cells[v];
+                if (grid[vc.i][vc.j] == WALL || uc.color != vc.color) continue;
+                qu.push(v);
+                connect(uc, vc);
+                conn.emplace_back(uc.i, uc.j, vc.i, vc.j);
+                update();
+                rem--;
+                nc++;
+            }
+        }
+        return nc;
+    }
+
+    std::pair<int, Result> post_process() {
+        vector<MoveAction> mvs;
+        for (int i = 0; i < M; i++) {
+            auto [i1, j1, i2, j2] = unpack(moves[i]);
+            mvs.emplace_back(i1, j1, i2, j2);
+        }
+        vector<ConnectAction> conn;
+        int rem = K * 100 - M, score = 0;
+        while (rem) {
+            auto cs = get_max_cluster();
+            if (cs.size() == 1) break;
+            int nc = greedy_connect(cs.front(), conn, rem);
+            score += nc * (nc - 1) / 2;
+        }
+        return { score, { mvs, conn } };
     }
 
     void print() const {
@@ -460,117 +547,36 @@ struct State {
 
 };
 
-struct Solver;
-using SolverPtr = std::shared_ptr<Solver>;
-struct Solver {
-
-    Timer timer;
-
-    int N, K;
-    int action_count_limit;
-    Grid<char> grid;
-
-    Solver(InputPtr input) : N(input->N), K(input->K), action_count_limit(K * 100), grid(input->grid) {}
-
-    State beam_search(State init_state) {
-        static constexpr int beam_width = 1, degree = 100;
-        static State sbuf[2][beam_width * degree];
-        static int ord[beam_width * degree];
-        static int scores[beam_width * degree];
-
-        int now_buffer = 0;
-        int buf_size[2] = {};
-
-        sbuf[now_buffer][0] = init_state;
-        ord[0] = 0;
-        buf_size[now_buffer]++;
-
-        State best_state(init_state);
-        int best_score = best_state.eval();
-
-        int turn = 0;
-        while (buf_size[now_buffer] && turn < K * 100) {
-            auto& now_states = sbuf[now_buffer];
-            auto& now_size = sbuf[now_buffer];
-            auto& next_states = sbuf[now_buffer ^ 1];
-            auto& next_size = buf_size[now_buffer ^ 1]; next_size = 0;
-
-            for (int n = 0; n < std::min(beam_width, buf_size[now_buffer]); n++) {
-                auto& now_state = now_states[ord[n]];
-                auto cands = now_state.enum_moves();
-                shuffle_vector(cands, rnd);
-                for (int i = 0; i < std::min(degree, (int)cands.size()); i++) {
-                    auto [id, d] = cands[i];
-                    auto& next_state = next_states[next_size];
-                    next_state = now_state;
-                    next_state.move(id, d);
-                    scores[next_size] = next_state.eval();
-                    next_size++;
-                }
-            }
-
-            if (!next_size) break;
-            std::iota(ord, ord + next_size, 0);
-            std::sort(ord, ord + next_size, [](int a, int b) {
-                return scores[a] > scores[b];
-                });
-
-            if (chmax(best_score, scores[ord[0]])) {
-                best_state = next_states[ord[0]];
-                //dump(turn, best_score);
-            }
-
-            now_buffer ^= 1;
-            turn++;
-        }
-        //dump(turn, best_score);
-        return best_state;
-    }
-
-    Result solve() {
-        State state(N, grid);
-        state = beam_search(state);
-        vector<MoveAction> moves;
-        for (int i = 0; i < state.M; i++) {
-            auto [i1, j1, i2, j2] = state.unpack(state.moves[i]);
-            moves.emplace_back(i1, j1, i2, j2);
-        }
-        dump(timer.elapsed_ms());
-        return Result{ moves,{} };
-    }
-
-};
-
-struct UnionFind_ {
-    std::map<pii, pii> parent;
-    UnionFind_() :parent() {}
-
-    pii find(pii x)
-    {
-        if (parent.find(x) == parent.end()) {
-            parent[x] = x;
-            return x;
-        }
-        else if (parent[x] == x) {
-            return x;
-        }
-        else {
-            parent[x] = find(parent[x]);
-            return parent[x];
-        }
-    }
-
-    void unite(pii x, pii y)
-    {
-        x = find(x);
-        y = find(y);
-        if (x != y) {
-            parent[x] = y;
-        }
-    }
-};
-
 int calc_score(InputPtr input, const Result& res) {
+
+    struct UnionFind_ {
+        std::map<pii, pii> parent;
+        UnionFind_() :parent() {}
+
+        pii find(pii x)
+        {
+            if (parent.find(x) == parent.end()) {
+                parent[x] = x;
+                return x;
+            }
+            else if (parent[x] == x) {
+                return x;
+            }
+            else {
+                parent[x] = find(parent[x]);
+                return parent[x];
+            }
+        }
+
+        void unite(pii x, pii y)
+        {
+            x = find(x);
+            y = find(y);
+            if (x != y) {
+                parent[x] = y;
+            }
+        }
+    };
 
     auto N = input->N;
     auto field = input->grid;
@@ -609,6 +615,89 @@ int calc_score(InputPtr input, const Result& res) {
     return std::max(score, 0);
 }
 
+struct Solver;
+using SolverPtr = std::shared_ptr<Solver>;
+struct Solver {
+
+    Timer timer;
+    Xorshift rnd;
+
+    InputPtr input;
+
+    int N, K;
+    int action_count_limit;
+    Grid<char> grid;
+
+    Solver(InputPtr input) : input(input), N(input->N), K(input->K), action_count_limit(K * 100), grid(input->grid) {}
+
+    vector<State> beam_search(State init_state) {
+        constexpr int beam_width = 1, degree = 100;
+        State sbuf[2][beam_width * degree];
+        int ord[beam_width * degree];
+        int scores[beam_width * degree];
+
+        int now_buffer = 0;
+        int buf_size[2] = {};
+
+        sbuf[now_buffer][0] = init_state;
+        ord[0] = 0;
+        buf_size[now_buffer]++;
+
+        vector<State> res({ init_state });
+
+        int turn = 0;
+        while (buf_size[now_buffer] && turn < K * 100) {
+            auto& now_states = sbuf[now_buffer];
+            auto& now_size = sbuf[now_buffer];
+            auto& next_states = sbuf[now_buffer ^ 1];
+            auto& next_size = buf_size[now_buffer ^ 1]; next_size = 0;
+
+            for (int n = 0; n < std::min(beam_width, buf_size[now_buffer]); n++) {
+                auto& now_state = now_states[ord[n]];
+                auto cands = now_state.enum_moves();
+                shuffle_vector(cands, rnd);
+                for (int i = 0; i < std::min(degree, (int)cands.size()); i++) {
+                    auto [id, d] = cands[i];
+                    auto& next_state = next_states[next_size];
+                    next_state = now_state;
+                    next_state.move(id, d);
+                    scores[next_size] = next_state.eval();
+                    next_size++;
+                }
+            }
+
+            if (!next_size) break;
+            std::iota(ord, ord + next_size, 0);
+            std::sort(ord, ord + next_size, [&scores](int a, int b) {
+                return scores[a] > scores[b];
+                });
+
+            res.push_back(next_states[ord[0]]);
+
+            now_buffer ^= 1;
+            turn++;
+        }
+        //dump(turn, best_score);
+        return res;
+    }
+
+    Result solve() {
+        State state(N, K, grid);
+        auto states = beam_search(state);
+        Result best;
+        int best_score = -1;
+        for (int i = 0; i < states.size(); i += 2) {
+            auto state = states[i];
+            auto [score, res] = state.post_process();
+            if (chmax(best_score, score)) {
+                best = res;
+            }
+        }
+        return best;
+    }
+
+};
+
 void print_answer(std::ostream& out, const Result& res) {
     out << res.move.size() << endl;
     for (auto m : res.move) {
@@ -631,6 +720,7 @@ void batch_test(int seed_begin = 0, int num_seed = 100) {
     int seed_end = seed_begin + num_seed;
 
     vector<int> scores(num_seed);
+#if 0
     concurrency::critical_section mtx;
     for (int batch_begin = seed_begin; batch_begin < seed_end; batch_begin += batch_size) {
         int batch_end = std::min(batch_begin + batch_size, seed_end);
@@ -653,6 +743,22 @@ void batch_test(int seed_begin = 0, int num_seed = 100) {
             }
         });
     }
+#else
+    for (int seed = seed_begin; seed < seed_begin + num_seed; seed++) {
+        std::ifstream ifs(format("tools/in/%04d.txt", seed));
+        std::istream& in = ifs;
+        std::ofstream ofs(format("tools/out/%04d.txt", seed));
+        std::ostream& out = ofs;
+
+        auto input = std::make_shared<Input>(in);
+        Solver solver(input);
+        auto ret = solver.solve();
+        print_answer(out, ret);
+
+        scores[seed] = calc_score(input, ret);
+        cerr << seed << ": " << scores[seed] << ", " << solver.timer.elapsed_ms() << '\n';
+    }
+#endif
 
     dump(std::accumulate(scores.begin(), scores.end(), 0));
 }
@@ -666,8 +772,8 @@ int main(int argc, char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools\in\0003.txt)");
-    std::ofstream ofs(R"(tools\out\0003.txt)");
+    std::ifstream ifs(R"(tools\in\0000.txt)");
+    std::ofstream ofs(R"(tools\out\0000.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
@@ -679,7 +785,6 @@ int main(int argc, char** argv) {
     batch_test();
 #else
     auto input = std::make_shared<Input>(in);
-    cerr << *input << endl;
     Solver solver(input);
     auto ret = solver.solve();
     dump(calc_score(input, ret));
