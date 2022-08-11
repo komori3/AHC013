@@ -322,7 +322,7 @@ struct Cell {
     }
 };
 
-struct LinkedList2D {
+struct State {
 
     static constexpr short WALL = -1;
     static constexpr short EMPTY = 0;
@@ -333,10 +333,16 @@ struct LinkedList2D {
     Grid<short> grid; // id
     short nexts[KK + 1][4];
 
-    LinkedList2D(int N, const Grid<char>& g) : N(N), V(0) {
+    int M;
+    int moves[KK + 1];
+
+    State() {}
+
+    State(int N, const Grid<char>& g) : N(N), V(0), M(0) {
         memset(cells, -1, sizeof(Cell) * (KK + 1));
         memset(grid.data(), -1, sizeof(short) * NN * NN);
         memset(nexts, -1, sizeof(short) * (KK + 1) * 4);
+        memset(moves, -1, sizeof(std::pair<short, short>) * (KK * 1));
         for (int i = 1; i <= N; i++) {
             for (int j = 1; j <= N; j++) {
                 if (g[i][j]) {
@@ -354,8 +360,6 @@ struct LinkedList2D {
                 nexts[cells[i].id][d] = search(cells[i], d);
             }
         }
-        dump(eval());
-        print();
     }
 
     inline short search(int i, int j, int d) const {
@@ -366,6 +370,52 @@ struct LinkedList2D {
 
     inline short search(const Cell& c, int d) const {
         return search(c.i, c.j, d);
+    }
+
+    bool can_move(int id, int d) const {
+        return !grid[cells[id].i + di[d]][cells[id].j + dj[d]];
+    }
+
+    inline int pack(int i1, int j1, int i2, int j2) const {
+        return (i1 << 24) | (j1 << 16) | (i2 << 8) | j2;
+    }
+
+    inline std::tuple<int, int, int, int> unpack(int p) const {
+        return {
+            (p >> 24) & 0xFF,
+            (p >> 16) & 0xFF,
+            (p >> 8) & 0xFF,
+            p & 0xFF
+        };
+    }
+
+    void move(int id, int d) {
+        auto& cell = cells[id];
+        moves[M++] = pack(cell.i, cell.j, cell.i + di[d], cell.j + dj[d]);
+        // (d+1)&3, (d+3)&3 ï˚å¸ÇçXêV
+        int d1 = (d + 1) & 3, d2 = (d + 3) & 3;
+        // erase
+        int id1 = nexts[id][d1], id2 = nexts[id][d2];
+        if (id1 != WALL) nexts[id1][d2] = id2;
+        if (id2 != WALL) nexts[id2][d1] = id1;
+        grid[cell.i][cell.j] = EMPTY;
+        // insert
+        cell.i += di[d]; cell.j += dj[d];
+        grid[cell.i][cell.j] = id;
+        id1 = nexts[id][d1] = search(cell.i, cell.j, d1);
+        id2 = nexts[id][d2] = search(cell.i, cell.j, d2);
+        if (id1 != WALL) nexts[id1][d2] = id;
+        if (id2 != WALL) nexts[id2][d1] = id;
+    }
+
+    vector<pii> enum_moves() const {
+        vector<pii> res;
+        for (int id = 1; id <= V; id++) {
+            for (int d = 0; d < 4; d++) {
+                if (can_move(id, d)) res.emplace_back(id, d);
+            }
+        }
+        return res;
     }
 
     int eval() const {
@@ -393,6 +443,10 @@ struct LinkedList2D {
         return score;
     }
 
+    Result post_process() {
+        // TODO
+    }
+
     void print() const {
         for (int i = 0; i <= N + 1; i++) {
             for (int j = 0; j <= N + 1; j++) {
@@ -410,16 +464,79 @@ struct Solver;
 using SolverPtr = std::shared_ptr<Solver>;
 struct Solver {
 
+    Timer timer;
+
     int N, K;
     int action_count_limit;
     Grid<char> grid;
 
     Solver(InputPtr input) : N(input->N), K(input->K), action_count_limit(K * 100), grid(input->grid) {}
 
-    Result solve() {
+    State beam_search(State init_state) {
+        static constexpr int beam_width = 1, degree = 100;
+        static State sbuf[2][beam_width * degree];
+        static int ord[beam_width * degree];
+        static int scores[beam_width * degree];
 
-        LinkedList2D ll2d(N, grid);
-        return Result{ {},{} };
+        int now_buffer = 0;
+        int buf_size[2] = {};
+
+        sbuf[now_buffer][0] = init_state;
+        ord[0] = 0;
+        buf_size[now_buffer]++;
+
+        State best_state(init_state);
+        int best_score = best_state.eval();
+
+        int turn = 0;
+        while (buf_size[now_buffer] && turn < K * 100) {
+            auto& now_states = sbuf[now_buffer];
+            auto& now_size = sbuf[now_buffer];
+            auto& next_states = sbuf[now_buffer ^ 1];
+            auto& next_size = buf_size[now_buffer ^ 1]; next_size = 0;
+
+            for (int n = 0; n < std::min(beam_width, buf_size[now_buffer]); n++) {
+                auto& now_state = now_states[ord[n]];
+                auto cands = now_state.enum_moves();
+                shuffle_vector(cands, rnd);
+                for (int i = 0; i < std::min(degree, (int)cands.size()); i++) {
+                    auto [id, d] = cands[i];
+                    auto& next_state = next_states[next_size];
+                    next_state = now_state;
+                    next_state.move(id, d);
+                    scores[next_size] = next_state.eval();
+                    next_size++;
+                }
+            }
+
+            if (!next_size) break;
+            std::iota(ord, ord + next_size, 0);
+            std::sort(ord, ord + next_size, [](int a, int b) {
+                return scores[a] > scores[b];
+                });
+
+            if (chmax(best_score, scores[ord[0]])) {
+                best_state = next_states[ord[0]];
+                //dump(turn, best_score);
+            }
+
+            now_buffer ^= 1;
+            turn++;
+        }
+        //dump(turn, best_score);
+        return best_state;
+    }
+
+    Result solve() {
+        State state(N, grid);
+        state = beam_search(state);
+        vector<MoveAction> moves;
+        for (int i = 0; i < state.M; i++) {
+            auto [i1, j1, i2, j2] = state.unpack(state.moves[i]);
+            moves.emplace_back(i1, j1, i2, j2);
+        }
+        dump(timer.elapsed_ms());
+        return Result{ moves,{} };
     }
 
 };
