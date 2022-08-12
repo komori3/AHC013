@@ -396,7 +396,7 @@ struct State {
     void move(int id, int d) {
         auto& cell = cells[id];
         moves[M++] = pack(cell.i, cell.j, cell.i + di[d], cell.j + dj[d]);
-        // (d+1)&3, (d+3)&3 •ûŒü‚ğXV
+        // (d+1)&3, (d+3)&3 æ–¹å‘ã‚’æ›´æ–°
         int d1 = (d + 1) & 3, d2 = (d + 3) & 3;
         // erase
         int id1 = nexts[id][d1], id2 = nexts[id][d2];
@@ -423,6 +423,7 @@ struct State {
     }
 
     int eval() const {
+#if 0
         bool used[KK + 1] = {};
         int score = 0;
         for (int s = 1; s <= V; s++) {
@@ -444,6 +445,16 @@ struct State {
             }
             score += nc * (nc - 1) / 2;
         }
+#else
+        int score = 0;
+        for (int u = 1; u <= V; u++) {
+            int ucol = cells[u].color;
+            for (int v : nexts[u]) {
+                if (v == -1) continue;
+                score += ucol == cells[v].color;
+            }
+        }
+#endif
         return score;
     }
 
@@ -631,7 +642,7 @@ struct Solver {
     Solver(InputPtr input) : input(input), N(input->N), K(input->K), action_count_limit(K * 100), grid(input->grid) {}
 
     vector<State> beam_search(State init_state) {
-        constexpr int beam_width = 1, degree = 100;
+        constexpr int beam_width = 3, degree = 100;
         State sbuf[2][beam_width * degree];
         int ord[beam_width * degree];
         int scores[beam_width * degree];
@@ -671,6 +682,8 @@ struct Solver {
             std::sort(ord, ord + next_size, [&scores](int a, int b) {
                 return scores[a] > scores[b];
                 });
+
+            //dump(next_states[ord[0]].eval());
 
             res.push_back(next_states[ord[0]]);
 
@@ -720,7 +733,7 @@ void batch_test(int seed_begin = 0, int num_seed = 100) {
     int seed_end = seed_begin + num_seed;
 
     vector<int> scores(num_seed);
-#if 0
+#if 1
     concurrency::critical_section mtx;
     for (int batch_begin = seed_begin; batch_begin < seed_end; batch_begin += batch_size) {
         int batch_end = std::min(batch_begin + batch_size, seed_end);
@@ -738,7 +751,7 @@ void batch_test(int seed_begin = 0, int num_seed = 100) {
             {
                 mtx.lock();
                 scores[seed] = calc_score(input, ret);
-                cerr << seed << ": " << scores[seed] << '\n';
+                cerr << seed << ": " << scores[seed] << ", " << solver.timer.elapsed_ms() << '\n';
                 mtx.unlock();
             }
         });
@@ -772,8 +785,8 @@ int main(int argc, char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools\in\0000.txt)");
-    std::ofstream ofs(R"(tools\out\0000.txt)");
+    std::ifstream ifs(R"(tools\in\0003.txt)");
+    std::ofstream ofs(R"(tools\out\0003.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
