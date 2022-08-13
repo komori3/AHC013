@@ -725,6 +725,253 @@ void print_answer(std::ostream& out, const Result& res) {
 }
 
 
+template< class T >
+struct CumulativeSum2D {
+    vector< vector< T > > data;
+
+    CumulativeSum2D() {}
+    CumulativeSum2D(int W, int H) : data(W + 1, vector< T >(H + 1, 0)) {}
+
+    void add(int x, int y, T z) {
+        ++x, ++y;
+        if (x >= data.size() || y >= data[0].size()) return;
+        data[x][y] += z;
+    }
+
+    void build() {
+        for (int i = 1; i < data.size(); i++) {
+            for (int j = 1; j < data[i].size(); j++) {
+                data[i][j] += data[i][j - 1] + data[i - 1][j] - data[i - 1][j - 1];
+            }
+        }
+    }
+
+    T query(int sx, int sy, int gx, int gy) const {
+        return (data[gx][gy] - data[sx][gy] - data[gx][sy] + data[sx][sy]);
+    }
+};
+
+struct TreeModifier {
+
+    struct Result {
+        vector<pii> edges;
+        vector<pii> pts_src;
+        vector<pii> pts_dst;
+    };
+
+    InputPtr input;
+    int N, C, V, E;
+    Grid<char> grid;
+    CumulativeSum2D<int> cumu;
+    vector<vector<int>> G;
+
+    vector<pii> edges;
+    vector<pii> pts_src;
+    vector<pii> pts_dst;
+
+    TreeModifier(InputPtr input, int C) : input(input), C(C) {}
+
+    Result run() {
+        init();
+        create_mst();
+        align();
+        return { edges, pts_src, pts_dst };
+    }
+
+    void init() {
+
+        N = input->N;
+        V = 0;
+        grid = input->grid;
+        cumu = CumulativeSum2D<int>(N + 2, N + 2);
+        for (int i = 1; i <= N; i++) {
+            for (int j = 1; j <= N; j++) {
+                if (!grid[i][j]) continue;
+                if (grid[i][j] == C) {
+                    pts_src.emplace_back(i, j);
+                    V++;
+                }
+                cumu.add(i, j, 1);
+            }
+        }
+        cumu.build();
+        E = V - 1;
+
+    }
+
+    inline int calc_mst_cost(int u, int v) const {
+        auto [ui, uj] = pts_src[u];
+        auto [vi, vj] = pts_src[v];
+        int cost1 = std::min(abs(ui - vi), abs(uj - vj));
+        //int cost1 = 0;
+        int cost2 = cumu.query(std::min(ui, vi), std::min(uj, vj), std::max(ui, vi) + 1, std::max(uj, vj) + 1) - 2;
+        //int cost2 = 0;
+        return cost1 + cost2;
+    }
+
+    bool cross_check(int u1, int v1) {
+        // 今まで追加した辺と交差するか？
+        int y1, x1, y2, x2, dy1, dx1;
+        std::tie(y1, x1) = pts_src[u1];
+        std::tie(y2, x2) = pts_src[v1];
+        dy1 = y2 - y1;
+        dx1 = x2 - x1;
+        auto f = [&](int x, int y) { return dy1 * x - dx1 * y + y1 * dx1 - x1 * dy1; };
+        for (auto [u2, v2] : edges) {
+            int y3, x3, y4, x4;
+            std::tie(y3, x3) = pts_src[u2];
+            std::tie(y4, x4) = pts_src[v2];
+            int v1 = f(x3, y3), v2 = f(x4, y4);
+            if (v1 * v2 >= 0) continue;
+            int dy2 = y4 - y3, dx2 = x4 - x3;
+            auto g = [&](int x, int y) { return dy2 * x - dx2 * y + y3 * dx2 - x3 * dy2; };
+            v1 = g(x1, y1); v2 = g(x2, y2);
+            if (v1 * v2 < 0) return true;
+        }
+        return false;
+    }
+
+    void create_mst() {
+
+        vector<std::tuple<int, int, int>> cands;
+        for (int u = 0; u < V - 1; u++) {
+            for (int v = u + 1; v < V; v++) {
+                cands.emplace_back(calc_mst_cost(u, v), u, v);
+            }
+        }
+        std::sort(cands.begin(), cands.end());
+
+        UnionFind tree(V);
+        G.resize(V);
+        for (auto [c, u, v] : cands) {
+            if (!tree.same(u, v) && !cross_check(u, v)) {
+                edges.emplace_back(u, v);
+                tree.unite(u, v);
+                G[u].push_back(v);
+                G[v].push_back(u);
+            }
+        }
+
+    }
+
+    inline int calc_align_cost(int i1, int j1, int i2, int j2) const {
+        return std::min(abs(i1 - i2), abs(j1 - j2));
+    };
+
+    inline int calc_move_cost(int i1, int j1, int i2, int j2) const {
+        return abs(i1 - i2) + abs(j1 - j2);
+    };
+
+    void align() {
+
+        pts_dst = pts_src;
+
+        constexpr int coeff = 3;
+
+        int cost = 0;
+        for (auto [u, v] : edges) {
+            auto [ui, uj] = pts_dst[u];
+            auto [vi, vj] = pts_dst[v];
+            cost += calc_align_cost(ui, uj, vi, vj) * coeff;
+        }
+
+        auto get_temp = [](double startTemp, double endTemp, double t, double T) {
+            return endTemp + (startTemp - endTemp) * (T - t) / T;
+        };
+
+        int num_loop = 1000000;
+        for (int loop = 0; loop < num_loop; loop++) {
+            int u = rnd.next_int(V), d = -1;
+            auto [ui, uj] = pts_dst[u];
+            do {
+                d = rnd.next_int(4);
+            } while (ui + di[d] <= 0 || ui + di[d] > N || uj + dj[d] <= 0 || uj + dj[d] > N);
+
+            int diff = 0;
+
+            for (int v : G[u]) {
+                auto [vi, vj] = pts_dst[v];
+                diff -= calc_align_cost(ui, uj, vi, vj) * coeff;
+            }
+            diff -= calc_move_cost(pts_src[u].first, pts_src[u].second, ui, uj);
+
+            ui += di[d]; uj += dj[d];
+
+            for (int v : G[u]) {
+                auto [vi, vj] = pts_dst[v];
+                diff += calc_align_cost(ui, uj, vi, vj) * coeff;
+            }
+            diff += calc_move_cost(pts_src[u].first, pts_src[u].second, ui, uj);
+
+            double temp = get_temp(0.3, 0.0, loop, num_loop);
+            double prob = exp(-diff / temp);
+
+            if (rnd.next_double() < prob) {
+                pts_dst[u] = { ui, uj };
+                cost += diff;
+            }
+
+            if (!(loop & 0xFFFF)) dump(cost);
+        }
+        dump(cost);
+
+        vis();
+    }
+
+#ifdef HAVE_OPENCV_HIGHGUI
+    void vis(int delay = 0) const {
+
+        string color_str[6] = { "FFFFFF", "CC0A0A", "3A0BD6", "00BFB6", "73D60B", "CCBA0C" };
+        cv::Scalar colors[6];
+        for (int i = 0; i < 6; i++) {
+            int x;
+            sscanf(color_str[i].c_str(), "%x", &x);
+            int r = x >> 16, g = x >> 8 & 0xFF, b = x & 0xFF;
+            colors[i] = cv::Scalar(b, g, r);
+        }
+
+        auto alpha = [](const cv::Scalar& c, double a) {
+            cv::Scalar w(255, 255, 255);
+            cv::Scalar res;
+            for (int i = 0; i < 3; i++) res[i] = std::clamp(round(a * c[i] + (1 - a) * w[i]), 0.0, 255.0);
+            return res;
+        };
+
+        int gsz = 30;
+        cv::Mat_<cv::Vec3b> img(gsz * N, gsz * N, cv::Vec3b(255, 255, 255));
+        for (int i = 0; i < N; i++) {
+            for (int j = 0; j < N; j++) {
+                if (!grid[i + 1][j + 1]) continue;
+                int c = grid[i + 1][j + 1];
+                cv::Rect roi(j * gsz, i * gsz, gsz, gsz);
+                cv::rectangle(img, roi, alpha(colors[c], 0.3), cv::FILLED);
+            }
+        }
+
+        for (auto [i, j] : pts_dst) {
+            i--; j--;
+            cv::Rect roi(j * gsz, i * gsz, gsz, gsz);
+            cv::rectangle(img, roi, alpha(colors[C], 1.0), 2);
+        }
+
+        for (auto [u, v] : edges) {
+            auto [ui, uj] = pts_dst[u];
+            auto [vi, vj] = pts_dst[v];
+            int y1 = (ui - 1) * gsz + gsz / 2, x1 = (uj - 1) * gsz + gsz / 2;
+            int y2 = (vi - 1) * gsz + gsz / 2, x2 = (vj - 1) * gsz + gsz / 2;
+            cv::line(img, cv::Point(x1, y1), cv::Point(x2, y2), colors[C]);
+        }
+
+        cv::imshow("img", img);
+        cv::waitKey(delay);
+
+    }
+#endif
+
+};
+
+
+
 
 #ifdef _MSC_VER
 void batch_test(int seed_begin = 0, int num_seed = 100) {
@@ -785,8 +1032,8 @@ int main(int argc, char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools\in\0003.txt)");
-    std::ofstream ofs(R"(tools\out\0003.txt)");
+    std::ifstream ifs(R"(tools\in\0008.txt)");
+    std::ofstream ofs(R"(tools\out\0008.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
@@ -798,6 +1045,12 @@ int main(int argc, char** argv) {
     batch_test();
 #else
     auto input = std::make_shared<Input>(in);
+    for (int c = 1; c <= input->K; c++) {
+        TreeModifier tm(input, c);
+        tm.run();
+    }
+    //test(input);
+    exit(1);
     Solver solver(input);
     auto ret = solver.solve();
     dump(calc_score(input, ret));
