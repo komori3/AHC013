@@ -225,6 +225,13 @@ static constexpr char USED = -1;
 static constexpr int di[4] = { 0, 1, 0, -1 };
 static constexpr int dj[4] = { 1, 0, -1, 0 };
 
+inline int get_dir(int i1, int j1, int i2, int j2) {
+    if (j1 < j2) return 0;
+    if (i1 < i2) return 1;
+    if (j2 < j1) return 2;
+    return 3;
+}
+
 struct Input;
 using InputPtr = std::shared_ptr<Input>;
 struct Input {
@@ -490,13 +497,6 @@ struct State {
         return res;
     }
 
-    inline int get_dir(int i1, int j1, int i2, int j2) const {
-        if (j1 < j2) return 0;
-        if (i1 < i2) return 1;
-        if (j2 < j1) return 2;
-        return 3;
-    }
-
     void connect(const Cell& c1, const Cell& c2) {
         int d = get_dir(c1.i, c1.j, c2.i, c2.j);
         int i = c1.i, j = c1.j;
@@ -751,9 +751,88 @@ struct CumulativeSum2D {
     }
 };
 
-struct TreeModifier {
+#ifdef HAVE_OPENCV_HIGHGUI
+void vis(
+    int N, int C,
+    const Grid<char>& grid,
+    const vector<pii>& edges, const vector<pii>& pts_src, const vector<pii>& pts_dst,
+    int delay = 0
+) {
+
+    string color_str[6] = { "FFFFFF", "CC0A0A", "3A0BD6", "00BFB6", "73D60B", "CCBA0C" };
+    cv::Scalar colors[6];
+    for (int i = 0; i < 6; i++) {
+        int x;
+        sscanf(color_str[i].c_str(), "%x", &x);
+        int r = x >> 16, g = x >> 8 & 0xFF, b = x & 0xFF;
+        colors[i] = cv::Scalar(b, g, r);
+    }
+
+    auto alpha = [](const cv::Scalar& c, double a) {
+        cv::Scalar w(255, 255, 255);
+        cv::Scalar res;
+        for (int i = 0; i < 3; i++) res[i] = std::clamp(round(a * c[i] + (1 - a) * w[i]), 0.0, 255.0);
+        return res;
+    };
+
+    int gsz = 30;
+    cv::Mat_<cv::Vec3b> img(gsz * N, gsz * N, cv::Vec3b(255, 255, 255));
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            if (!grid[i + 1][j + 1]) continue;
+            int c = grid[i + 1][j + 1];
+            cv::Rect roi(j * gsz, i * gsz, gsz, gsz);
+            cv::rectangle(img, roi, alpha(colors[c], 0.3), cv::FILLED);
+        }
+    }
+
+    Grid<bool> on_edge = {};
+    for (auto [u, v] : edges) {
+        auto [ui, uj] = pts_dst[u];
+        auto [vi, vj] = pts_dst[v];
+        //dump(ui, uj, vi, vj);
+        int y1 = (ui - 1) * gsz + gsz / 2, x1 = (uj - 1) * gsz + gsz / 2;
+        int y2 = (vi - 1) * gsz + gsz / 2, x2 = (vj - 1) * gsz + gsz / 2;
+        cv::line(img, cv::Point(x1, y1), cv::Point(x2, y2), colors[C]);
+        if (ui == vi || uj == vj) {
+            int d = get_dir(ui, uj, vi, vj);
+            on_edge[ui][uj] = true;
+            while (ui != vi || uj != vj) {
+                ui += di[d]; uj += dj[d];
+                on_edge[ui][uj] = true;
+            }
+        }
+    }
+
+    for (int i = 1; i <= N; i++) {
+        for (int j = 1; j <= N; j++) {
+            if (on_edge[i][j] && grid[i][j] && grid[i][j] != C) {
+                cv::Rect roi((j - 1) * gsz, (i - 1) * gsz, gsz, gsz);
+                cv::rectangle(img, roi, alpha(colors[C], 1.0), 2);
+            }
+        }
+    }
+
+    for (int u = 0; u < pts_src.size(); u++) {
+        if (pts_src[u] == pts_dst[u]) continue;
+        auto [ui, uj] = pts_src[u];
+        auto [vi, vj] = pts_dst[u];
+        int y1 = (ui - 1) * gsz + gsz / 2, x1 = (uj - 1) * gsz + gsz / 2;
+        int y2 = (vi - 1) * gsz + gsz / 2, x2 = (vj - 1) * gsz + gsz / 2;
+        cv::arrowedLine(img, cv::Point(x1, y1), cv::Point(x2, y2), colors[C], 2, 8, 0, 0.2);
+    }
+
+    cv::imshow("img", img);
+    cv::waitKey(delay);
+
+}
+#endif
+
+struct TreeBuilder {
 
     struct Result {
+        bool succeed;
+        int C;
         vector<pii> edges;
         vector<pii> pts_src;
         vector<pii> pts_dst;
@@ -769,13 +848,13 @@ struct TreeModifier {
     vector<pii> pts_src;
     vector<pii> pts_dst;
 
-    TreeModifier(InputPtr input, int C) : input(input), C(C) {}
+    TreeBuilder(InputPtr input, int C) : input(input), C(C) {}
 
     Result run() {
         init();
         create_mst();
-        align();
-        return { edges, pts_src, pts_dst };
+        bool succeed = align();
+        return { succeed, C, edges, pts_src, pts_dst };
     }
 
     void init() {
@@ -803,9 +882,7 @@ struct TreeModifier {
         auto [ui, uj] = pts_src[u];
         auto [vi, vj] = pts_src[v];
         int cost1 = std::min(abs(ui - vi), abs(uj - vj));
-        //int cost1 = 0;
         int cost2 = cumu.query(std::min(ui, vi), std::min(uj, vj), std::max(ui, vi) + 1, std::max(uj, vj) + 1) - 2;
-        //int cost2 = 0;
         return cost1 + cost2;
     }
 
@@ -821,12 +898,12 @@ struct TreeModifier {
             int y3, x3, y4, x4;
             std::tie(y3, x3) = pts_src[u2];
             std::tie(y4, x4) = pts_src[v2];
-            int v1 = f(x3, y3), v2 = f(x4, y4);
-            if (v1 * v2 >= 0) continue;
+            int z1 = f(x3, y3), z2 = f(x4, y4);
+            if (z1 * z2 >= 0) continue;
             int dy2 = y4 - y3, dx2 = x4 - x3;
             auto g = [&](int x, int y) { return dy2 * x - dx2 * y + y3 * dx2 - x3 * dy2; };
-            v1 = g(x1, y1); v2 = g(x2, y2);
-            if (v1 * v2 < 0) return true;
+            z1 = g(x1, y1); z2 = g(x2, y2);
+            if (z1 * z2 < 0) return true;
         }
         return false;
     }
@@ -862,9 +939,11 @@ struct TreeModifier {
         return abs(i1 - i2) + abs(j1 - j2);
     };
 
-    void align() {
+    bool align() {
 
         pts_dst = pts_src;
+        bool used[NN][NN] = {};
+        for (auto [i, j] : pts_dst) used[i][j] = true; // 同じ点を目的地としないようにする
 
         constexpr int coeff = 3;
 
@@ -880,12 +959,22 @@ struct TreeModifier {
         };
 
         int num_loop = 1000000;
+        vector<int> dirs({ 0, 1, 2, 3 });
         for (int loop = 0; loop < num_loop; loop++) {
+
+            //if (!(loop & 0xFFFF)) dump(loop, cost);
+
             int u = rnd.next_int(V), d = -1;
             auto [ui, uj] = pts_dst[u];
-            do {
-                d = rnd.next_int(4);
-            } while (ui + di[d] <= 0 || ui + di[d] > N || uj + dj[d] <= 0 || uj + dj[d] > N);
+            shuffle_vector(dirs, rnd);
+            for (int d_ : dirs) {
+                int ni = ui + di[d_], nj = uj + dj[d_];
+                if (0 < ni && ni <= N && 0 < nj && nj <= N && !used[ni][nj]) {
+                    d = d_;
+                    break;
+                }
+            }
+            if (d == -1) continue;
 
             int diff = 0;
 
@@ -903,75 +992,309 @@ struct TreeModifier {
             }
             diff += calc_move_cost(pts_src[u].first, pts_src[u].second, ui, uj);
 
-            double temp = get_temp(0.3, 0.0, loop, num_loop);
+            double temp = get_temp(2.0, 0.0, loop, num_loop);
             double prob = exp(-diff / temp);
 
             if (rnd.next_double() < prob) {
+                used[pts_dst[u].first][pts_dst[u].second] = false;
                 pts_dst[u] = { ui, uj };
+                used[pts_dst[u].first][pts_dst[u].second] = true;
                 cost += diff;
             }
-
-            if (!(loop & 0xFFFF)) dump(cost);
         }
-        dump(cost);
-
-        vis();
-    }
-
-#ifdef HAVE_OPENCV_HIGHGUI
-    void vis(int delay = 0) const {
-
-        string color_str[6] = { "FFFFFF", "CC0A0A", "3A0BD6", "00BFB6", "73D60B", "CCBA0C" };
-        cv::Scalar colors[6];
-        for (int i = 0; i < 6; i++) {
-            int x;
-            sscanf(color_str[i].c_str(), "%x", &x);
-            int r = x >> 16, g = x >> 8 & 0xFF, b = x & 0xFF;
-            colors[i] = cv::Scalar(b, g, r);
-        }
-
-        auto alpha = [](const cv::Scalar& c, double a) {
-            cv::Scalar w(255, 255, 255);
-            cv::Scalar res;
-            for (int i = 0; i < 3; i++) res[i] = std::clamp(round(a * c[i] + (1 - a) * w[i]), 0.0, 255.0);
-            return res;
-        };
-
-        int gsz = 30;
-        cv::Mat_<cv::Vec3b> img(gsz * N, gsz * N, cv::Vec3b(255, 255, 255));
-        for (int i = 0; i < N; i++) {
-            for (int j = 0; j < N; j++) {
-                if (!grid[i + 1][j + 1]) continue;
-                int c = grid[i + 1][j + 1];
-                cv::Rect roi(j * gsz, i * gsz, gsz, gsz);
-                cv::rectangle(img, roi, alpha(colors[c], 0.3), cv::FILLED);
-            }
-        }
-
-        for (auto [i, j] : pts_dst) {
-            i--; j--;
-            cv::Rect roi(j * gsz, i * gsz, gsz, gsz);
-            cv::rectangle(img, roi, alpha(colors[C], 1.0), 2);
-        }
+        //dump(cost);
 
         for (auto [u, v] : edges) {
             auto [ui, uj] = pts_dst[u];
             auto [vi, vj] = pts_dst[v];
-            int y1 = (ui - 1) * gsz + gsz / 2, x1 = (uj - 1) * gsz + gsz / 2;
-            int y2 = (vi - 1) * gsz + gsz / 2, x2 = (vj - 1) * gsz + gsz / 2;
-            cv::line(img, cv::Point(x1, y1), cv::Point(x2, y2), colors[C]);
+            if (ui != vi && uj != vj) return false;
+        }
+        return true;
+    }
+
+};
+
+struct ClusterBuilder {
+
+    InputPtr input;
+
+    int N, C;
+    Grid<char> grid;
+    vector<pii> edges;
+    vector<pii> pts_src;
+    vector<pii> pts_dst;
+
+    Grid<bool> on_edge;
+
+    vector<MoveAction> moves;
+
+    ClusterBuilder(InputPtr input, const TreeBuilder::Result& tree_res) :
+        input(input), N(input->N), C(tree_res.C), grid(input->grid),
+        edges(tree_res.edges), pts_src(tree_res.pts_src), pts_dst(tree_res.pts_dst), on_edge() 
+    {
+        for (auto [u, v] : edges) {
+            auto [ui, uj] = pts_dst[u];
+            auto [vi, vj] = pts_dst[v];
+            int d = get_dir(ui, uj, vi, vj);
+            on_edge[ui][uj] = true;
+            while (ui != vi || uj != vj) {
+                ui += di[d]; uj += dj[d];
+                on_edge[ui][uj] = true;
+            }
+        }
+    }
+
+    vector<ConnectAction> connect() {
+
+        bool nmap[NN][NN] = {};
+        int idmap[NN][NN] = {};
+        UnionFind tree(pts_dst.size());
+        for (int id = 0; id < pts_dst.size(); id++) {
+            auto [i, j] = pts_dst[id];
+            nmap[i][j] = true;
+            idmap[i][j] = id;
         }
 
-        cv::imshow("img", img);
-        cv::waitKey(delay);
+        bool emap[NN][NN][4] = {};
+        for (auto [u, v] : edges) {
+            auto [ui, uj] = pts_dst[u];
+            auto [vi, vj] = pts_dst[v];
+            int d = get_dir(ui, uj, vi, vj);
+            while (ui != vi || uj != vj) {
+                emap[ui][uj][d] = emap[ui + di[d]][uj + dj[d]][(d + 2) & 3] = true;
+                ui += di[d]; uj += dj[d];
+            }
+        }
+        
+        auto [si, sj] = pts_dst.front();
+        std::queue<std::tuple<int, int, int>> qu;
+        bool used[NN][NN][4] = {};
+        for (int d = 0; d < 4; d++) {
+            if (emap[si][sj][d]) {
+                qu.emplace(si, sj, d);
+                used[si][sj][d] = true;
+            }
+        }
 
+        vector<ConnectAction> connects;
+        while (!qu.empty()) {
+            auto [i, j, d] = qu.front(); qu.pop();
+            int ni = i, nj = j;
+            do {
+                used[ni][nj][d] = used[ni + di[d]][nj + dj[d]][(d + 2) & 3] = true;
+                ni += di[d]; nj += dj[d];
+            } while (!nmap[ni][nj]);
+            {
+                int u = idmap[i][j], v = idmap[ni][nj];
+                if (!tree.same(u, v)) {
+                    tree.unite(u, v);
+                    connects.emplace_back(i, j, ni, nj);
+                }
+            }
+            for (int nd = 0; nd < 4; nd++) {
+                if (used[ni][nj][nd] || !emap[ni][nj][nd]) continue;
+                qu.emplace(ni, nj, nd);
+                used[ni][nj][nd] = true;
+            }
+        }
+
+        return connects;
     }
-#endif
+
+    Result run() {
+        bool ok = false;
+        vis(N, C, grid, edges, pts_src, pts_dst);
+        for (int i = 0; i < 10; i++) {
+            move_to_target();
+            vis(N, C, grid, edges, pts_src, pts_dst);
+            remove_node_on_edge();
+            vis(N, C, grid, edges, pts_src, pts_dst);
+            ok = check();
+            if (ok) break;
+        }
+        if (!ok) return {};
+        vis(N, C, grid, edges, pts_src, pts_dst);
+        auto connects = connect();
+        if (moves.size() + connects.size() > input->K * 100) return {};
+        return { moves, connects };
+    }
+
+    bool check() const {
+        bool ok = true;
+        if (pts_src != pts_dst) return false;
+        for (int i = 1; i <= N; i++) {
+            for (int j = 1; j <= N; j++) {
+                if (on_edge[i][j] && grid[i][j] && grid[i][j] != C) {
+                    ok = false;
+                }
+            }
+        }
+        return ok;
+    }
+
+    //bool force_move(int id) {
+    //    auto [si, sj] = pts_src[id];
+    //    auto [ti, tj] = pts_dst[id];
+    //    // なるべく空マスを通るよう適当に
+    //    vector<pii> path({ {si, sj} });
+    //    while (si != ti || sj != tj) {
+    //        int mindist = INT_MAX, mind = -1;
+    //        for (int d = 0; d < 4; d++) {
+    //            int ni = si + di[d], nj = sj + dj[d];
+    //            int dist = 2 * (abs(ni - ti) + abs(nj - tj)) + int(grid[ni][nj] != 0);
+    //            if (chmin(mindist, dist)) {
+    //                mind = d;
+    //            }
+    //        }
+    //        si += di[mind]; sj += dj[mind];
+    //        path.emplace_back(si, sj);
+    //    }
+    //    for (int pid = 0; pid + 1 < path.size(); pid++) {
+    //        auto [i1, j1] = path[pid];
+    //        auto [i2, j2] = path[pid + 1];
+    //        if (!grid[i2][j2]) {
+    //            // 空マスにはそのまま移動
+    //            std::swap(grid[i1][j1], grid[i2][j2]);
+    //            moves.emplace_back(i1, j1, i2, j2);
+    //            pts_src[id] = { i2, j2 };
+    //            continue;
+    //        }
+    //        // (i2, j2) に存在するブロックを除外する
+    //    }
+    //}
+
+    void remove_node_on_edge() {
+
+        for (int si = 1; si <= N; si++) {
+            for (int sj = 1; sj <= N; sj++) {
+                if (!(grid[si][sj] && grid[si][sj] != C && on_edge[si][sj])) continue;
+                // edge 上にある余計なブロックを移動
+                bool seen[NN][NN] = {};
+                int prev[NN][NN]; Fill(prev, -1);
+                std::queue<pii> qu({ {si, sj} });
+                seen[si][sj] = true;
+                int ti = -1, tj = -1;
+                while (!qu.empty() && ti == -1) {
+                    auto [i, j] = qu.front(); qu.pop();
+                    for (int d = 0; d < 4; d++) {
+                        int ni = i + di[d], nj = j + dj[d];
+                        if (seen[ni][nj] || grid[ni][nj]) continue;
+                        qu.emplace(ni, nj);
+                        seen[ni][nj] = true;
+                        prev[ni][nj] = d;
+                        if (!on_edge[ni][nj]) {
+                            ti = ni; tj = nj;
+                            break;
+                        }
+                    }
+                }
+                vector<pii> path;
+                if (ti != -1) {
+                    int i = ti, j = tj, d = prev[ti][tj];
+                    path.emplace_back(i, j);
+                    while (d != -1) {
+                        i -= di[d]; j -= dj[d]; d = prev[i][j];
+                        path.emplace_back(i, j);
+                    }
+                    reverse(path.begin(), path.end());
+                    for (int i = 0; i + 1 < path.size(); i++) {
+                        auto [i1, j1] = path[i];
+                        auto [i2, j2] = path[i + 1];
+                        moves.emplace_back(i1, j1, i2, j2);
+                        std::swap(grid[i1][j1], grid[i2][j2]);
+                        //dump(i1, j1, i2, j2);
+                        //moves.emplace_back(i1, j1, i2, j2);
+                    }
+                }
+            }
+        }
+        //dump(moves.size());
+    }
+
+    void move_to_target() {
+
+        for (int id = 0; id < pts_src.size(); id++) {
+            if (pts_src[id] == pts_dst[id]) continue;
+            auto [si, sj] = pts_src[id];
+            auto [ti, tj] = pts_dst[id];
+            // (si, sj) から (ti, tj) まで移動可能なら移動させる
+            bool seen[NN][NN] = {};
+            int prev[NN][NN]; Fill(prev, -1);
+            std::queue<pii> qu({ pts_src[id] });
+            seen[si][sj] = true;
+            bool complete = false;
+            while (!qu.empty() && !complete) {
+                auto [i, j] = qu.front(); qu.pop();
+                for (int d = 0; d < 4; d++) {
+                    int ni = i + di[d], nj = j + dj[d];
+                    if (seen[ni][nj] || grid[ni][nj]) continue;
+                    seen[ni][nj] = true;
+                    prev[ni][nj] = d;
+                    if (ni == ti && nj == tj) {
+                        complete = true;
+                        break;
+                    }
+                    qu.emplace(ni, nj);
+                }
+            }
+            vector<pii> path;
+            if (complete) {
+                int i = ti, j = tj, d = prev[ti][tj];
+                path.emplace_back(i, j);
+                while (d != -1) {
+                    i -= di[d]; j -= dj[d]; d = prev[i][j];
+                    path.emplace_back(i, j);
+                }
+                reverse(path.begin(), path.end());
+                for (int i = 0; i + 1 < path.size(); i++) {
+                    auto [i1, j1] = path[i];
+                    auto [i2, j2] = path[i + 1];
+                    moves.emplace_back(i1, j1, i2, j2);
+                    //dump(i1, j1, i2, j2);
+                    std::swap(grid[i1][j1], grid[i2][j2]);
+                    pts_src[id] = { i2, j2 };
+                }
+            }
+        }
+        //dump(moves.size());
+    }
 
 };
 
 
+Result solve(InputPtr input) {
 
+    int best_score = -1;
+    Result best_res;
+    for (int c = 1; c <= input->K; c++) {
+        TreeBuilder tb(input, c);
+        auto tb_res = tb.run();
+        if (!tb_res.succeed) continue;
+        ClusterBuilder cb(input, tb_res);
+        auto cb_res = cb.run();
+        if (!cb_res.move.empty()) {
+            int score = calc_score(input, cb_res);
+            if (chmax(best_score, score)) {
+                best_res = cb_res;
+                dump(c, score);
+            }
+        }
+    }
+
+    Solver solver(input);
+    {
+        auto ret = solver.solve();
+        int score = calc_score(input, ret);
+        if (chmax(best_score, score)) {
+            best_res = ret;
+            dump(score);
+        }
+    }
+
+    dump(best_score);
+
+    return best_res;
+}
 
 #ifdef _MSC_VER
 void batch_test(int seed_begin = 0, int num_seed = 100) {
@@ -991,14 +1314,13 @@ void batch_test(int seed_begin = 0, int num_seed = 100) {
             std::ostream& out = ofs;
 
             auto input = std::make_shared<Input>(in);
-            Solver solver(input);
-            auto ret = solver.solve();
-            print_answer(out, ret);
+            auto res = solve(input);
+            print_answer(out, res);
 
             {
                 mtx.lock();
-                scores[seed] = calc_score(input, ret);
-                cerr << seed << ": " << scores[seed] << ", " << solver.timer.elapsed_ms() << '\n';
+                scores[seed] = calc_score(input, res);
+                cerr << seed << ": " << scores[seed] << '\n';
                 mtx.unlock();
             }
         });
@@ -1032,8 +1354,8 @@ int main(int argc, char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools\in\0008.txt)");
-    std::ofstream ofs(R"(tools\out\0008.txt)");
+    std::ifstream ifs(R"(tools\in\0010.txt)");
+    std::ofstream ofs(R"(tools\out\0010.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
@@ -1045,16 +1367,8 @@ int main(int argc, char** argv) {
     batch_test();
 #else
     auto input = std::make_shared<Input>(in);
-    for (int c = 1; c <= input->K; c++) {
-        TreeModifier tm(input, c);
-        tm.run();
-    }
-    //test(input);
-    exit(1);
-    Solver solver(input);
-    auto ret = solver.solve();
-    dump(calc_score(input, ret));
-    print_answer(out, ret);
+    auto res = solve(input);
+    print_answer(out, res);
 #endif
 
     return 0;
