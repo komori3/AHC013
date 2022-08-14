@@ -1023,6 +1023,7 @@ struct ClusterBuilder {
     vector<pii> edges;
     vector<pii> pts_src;
     vector<pii> pts_dst;
+    Grid<int> smap;
 
     Grid<bool> on_edge;
 
@@ -1030,8 +1031,13 @@ struct ClusterBuilder {
 
     ClusterBuilder(InputPtr input, const TreeBuilder::Result& tree_res) :
         input(input), N(input->N), C(tree_res.C), grid(input->grid),
-        edges(tree_res.edges), pts_src(tree_res.pts_src), pts_dst(tree_res.pts_dst), on_edge() 
+        edges(tree_res.edges), pts_src(tree_res.pts_src), pts_dst(tree_res.pts_dst), smap(), on_edge()
     {
+        memset(smap.data(), -1, sizeof(int) * NN * NN);
+        for (int id = 0; id < pts_src.size(); id++) {
+            auto [i, j] = pts_src[id];
+            smap[i][j] = id;
+        }
         for (auto [u, v] : edges) {
             auto [ui, uj] = pts_dst[u];
             auto [vi, vj] = pts_dst[v];
@@ -1044,15 +1050,23 @@ struct ClusterBuilder {
         }
     }
 
+    void move(int i1, int j1, int i2, int j2) {
+        moves.emplace_back(i1, j1, i2, j2);
+        std::swap(grid[i1][j1], grid[i2][j2]);
+        std::swap(smap[i1][j1], smap[i2][j2]);
+        if (smap[i1][j1] != -1) pts_src[smap[i1][j1]] = { i1, j1 };
+        if (smap[i2][j2] != -1) pts_src[smap[i2][j2]] = { i2, j2 };
+    }
+
     vector<ConnectAction> connect() {
 
         bool nmap[NN][NN] = {};
-        int idmap[NN][NN] = {};
+        int tmap[NN][NN] = {};
         UnionFind tree(pts_dst.size());
         for (int id = 0; id < pts_dst.size(); id++) {
             auto [i, j] = pts_dst[id];
             nmap[i][j] = true;
-            idmap[i][j] = id;
+            tmap[i][j] = id;
         }
 
         bool emap[NN][NN][4] = {};
@@ -1065,7 +1079,7 @@ struct ClusterBuilder {
                 ui += di[d]; uj += dj[d];
             }
         }
-        
+
         auto [si, sj] = pts_dst.front();
         std::queue<std::tuple<int, int, int>> qu;
         bool used[NN][NN][4] = {};
@@ -1085,7 +1099,7 @@ struct ClusterBuilder {
                 ni += di[d]; nj += dj[d];
             } while (!nmap[ni][nj]);
             {
-                int u = idmap[i][j], v = idmap[ni][nj];
+                int u = tmap[i][j], v = tmap[ni][nj];
                 if (!tree.same(u, v)) {
                     tree.unite(u, v);
                     connects.emplace_back(i, j, ni, nj);
@@ -1103,17 +1117,22 @@ struct ClusterBuilder {
 
     Result run() {
         bool ok = false;
-        vis(N, C, grid, edges, pts_src, pts_dst);
-        for (int i = 0; i < 10; i++) {
-            move_to_target();
-            vis(N, C, grid, edges, pts_src, pts_dst);
-            remove_node_on_edge();
-            vis(N, C, grid, edges, pts_src, pts_dst);
+        //vis(N, C, grid, edges, pts_src, pts_dst);
+        for (int trial = 0; trial < 3; trial++) {
+            bool update;
+            while (true) {
+                update = false;
+                update |= soft_move();
+                update |= soft_remove();
+                if (!update) break;
+            }
+            hard_move();
+            hard_remove();
             ok = check();
             if (ok) break;
         }
         if (!ok) return {};
-        vis(N, C, grid, edges, pts_src, pts_dst);
+        //vis(N, C, grid, edges, pts_src, pts_dst);
         auto connects = connect();
         if (moves.size() + connects.size() > input->K * 100) return {};
         return { moves, connects };
@@ -1132,38 +1151,101 @@ struct ClusterBuilder {
         return ok;
     }
 
-    //bool force_move(int id) {
-    //    auto [si, sj] = pts_src[id];
-    //    auto [ti, tj] = pts_dst[id];
-    //    // なるべく空マスを通るよう適当に
-    //    vector<pii> path({ {si, sj} });
-    //    while (si != ti || sj != tj) {
-    //        int mindist = INT_MAX, mind = -1;
-    //        for (int d = 0; d < 4; d++) {
-    //            int ni = si + di[d], nj = sj + dj[d];
-    //            int dist = 2 * (abs(ni - ti) + abs(nj - tj)) + int(grid[ni][nj] != 0);
-    //            if (chmin(mindist, dist)) {
-    //                mind = d;
-    //            }
-    //        }
-    //        si += di[mind]; sj += dj[mind];
-    //        path.emplace_back(si, sj);
-    //    }
-    //    for (int pid = 0; pid + 1 < path.size(); pid++) {
-    //        auto [i1, j1] = path[pid];
-    //        auto [i2, j2] = path[pid + 1];
-    //        if (!grid[i2][j2]) {
-    //            // 空マスにはそのまま移動
-    //            std::swap(grid[i1][j1], grid[i2][j2]);
-    //            moves.emplace_back(i1, j1, i2, j2);
-    //            pts_src[id] = { i2, j2 };
-    //            continue;
-    //        }
-    //        // (i2, j2) に存在するブロックを除外する
-    //    }
-    //}
+    bool hard_remove(int si, int sj) {
+        // (si, sj) 以外の on_edge を踏まずに空マスに到達するような最短パスに沿って移動
+        bool seen[NN][NN] = {};
+        int prev[NN][NN]; Fill(prev, -1);
+        std::queue<pii> qu({ { si, sj } });
+        seen[si][sj] = true;
+        int ti = -1, tj = -1;
+        while (!qu.empty() && ti == -1) {
+            auto [i, j] = qu.front(); qu.pop();
+            for (int d = 0; d < 4; d++) {
+                int ni = i + di[d], nj = j + dj[d];
+                if (grid[ni][nj] == -1 || seen[ni][nj] || on_edge[ni][nj]) continue;
+                qu.emplace(ni, nj);
+                seen[ni][nj] = true;
+                prev[ni][nj] = d;
+                if (!grid[ni][nj]) {
+                    ti = ni; tj = nj;
+                    break;
+                }
+            }
+        }
+        if (ti == -1) return false;
+        vector<pii> path; // TODO: いらない
+        if (ti != -1) {
+            int i = ti, j = tj, d = prev[ti][tj];
+            path.emplace_back(i, j);
+            while (d != -1) {
+                i -= di[d]; j -= dj[d]; d = prev[i][j];
+                path.emplace_back(i, j);
+            }
+            for (int i = 0; i + 1 < path.size(); i++) {
+                auto [i2, j2] = path[i];
+                auto [i1, j1] = path[i + 1];
+                if (!grid[i1][j1]) continue;
+                move(i1, j1, i2, j2);
+            }
+        }
+        return true;
+    }
 
-    void remove_node_on_edge() {
+    void hard_remove() {
+        for (int i = 1; i <= N; i++) {
+            for (int j = 1; j <= N; j++) {
+                if (!(grid[i][j] && grid[i][j] != C && on_edge[i][j])) continue;
+                hard_remove(i, j);
+            }
+        }
+    }
+
+    bool hard_move(int id) {
+        auto [si, sj] = pts_src[id];
+        auto [ti, tj] = pts_dst[id];
+        // なるべく空マスを通るよう適当に
+        vector<pii> path({ {si, sj} });
+        while (si != ti || sj != tj) {
+            int mindist = INT_MAX, mind = -1;
+            for (int d = 0; d < 4; d++) {
+                int ni = si + di[d], nj = sj + dj[d];
+                int dist = 2 * (abs(ni - ti) + abs(nj - tj)) + int(grid[ni][nj] != 0);
+                if (chmin(mindist, dist)) {
+                    mind = d;
+                }
+            }
+            si += di[mind]; sj += dj[mind];
+            path.emplace_back(si, sj);
+        }
+        for (int pid = 0; pid + 1 < path.size(); pid++) {
+            auto [i1, j1] = path[pid];
+            auto [i2, j2] = path[pid + 1];
+            if (!grid[i2][j2]) {
+                // 空マスにはそのまま移動
+                move(i1, j1, i2, j2);
+                continue;
+            }
+            // (i2, j2) に存在するブロックを除外する
+            bool pb = on_edge[i1][j1];
+            on_edge[i1][j1] = true; // 一時的に fix
+            bool ok = hard_remove(i2, j2);
+            on_edge[i1][j1] = pb;
+            if (!ok) return false;
+            move(i1, j1, i2, j2);
+        }
+        return true;
+    }
+
+    void hard_move() {
+        for (int id = 0; id < pts_src.size(); id++) {
+            if (pts_src[id] == pts_dst[id]) continue;
+            hard_move(id);
+        }
+    }
+
+    bool soft_remove() {
+
+        bool update = false;
 
         for (int si = 1; si <= N; si++) {
             for (int sj = 1; sj <= N; sj++) {
@@ -1190,6 +1272,7 @@ struct ClusterBuilder {
                 }
                 vector<pii> path;
                 if (ti != -1) {
+                    update = true;
                     int i = ti, j = tj, d = prev[ti][tj];
                     path.emplace_back(i, j);
                     while (d != -1) {
@@ -1200,18 +1283,18 @@ struct ClusterBuilder {
                     for (int i = 0; i + 1 < path.size(); i++) {
                         auto [i1, j1] = path[i];
                         auto [i2, j2] = path[i + 1];
-                        moves.emplace_back(i1, j1, i2, j2);
-                        std::swap(grid[i1][j1], grid[i2][j2]);
-                        //dump(i1, j1, i2, j2);
-                        //moves.emplace_back(i1, j1, i2, j2);
+                        move(i1, j1, i2, j2);
                     }
                 }
             }
         }
-        //dump(moves.size());
+
+        return update;
     }
 
-    void move_to_target() {
+    bool soft_move() {
+
+        bool update = false;
 
         for (int id = 0; id < pts_src.size(); id++) {
             if (pts_src[id] == pts_dst[id]) continue;
@@ -1239,6 +1322,7 @@ struct ClusterBuilder {
             }
             vector<pii> path;
             if (complete) {
+                update = true;
                 int i = ti, j = tj, d = prev[ti][tj];
                 path.emplace_back(i, j);
                 while (d != -1) {
@@ -1249,14 +1333,12 @@ struct ClusterBuilder {
                 for (int i = 0; i + 1 < path.size(); i++) {
                     auto [i1, j1] = path[i];
                     auto [i2, j2] = path[i + 1];
-                    moves.emplace_back(i1, j1, i2, j2);
-                    //dump(i1, j1, i2, j2);
-                    std::swap(grid[i1][j1], grid[i2][j2]);
-                    pts_src[id] = { i2, j2 };
+                    move(i1, j1, i2, j2);
                 }
             }
         }
-        //dump(moves.size());
+
+        return update;
     }
 
 };
@@ -1276,7 +1358,7 @@ Result solve(InputPtr input) {
             int score = calc_score(input, cb_res);
             if (chmax(best_score, score)) {
                 best_res = cb_res;
-                dump(c, score);
+                //dump(c, score);
             }
         }
     }
@@ -1287,11 +1369,11 @@ Result solve(InputPtr input) {
         int score = calc_score(input, ret);
         if (chmax(best_score, score)) {
             best_res = ret;
-            dump(score);
+            //dump(score);
         }
     }
 
-    dump(best_score);
+    //dump(best_score);
 
     return best_res;
 }
@@ -1323,7 +1405,7 @@ void batch_test(int seed_begin = 0, int num_seed = 100) {
                 cerr << seed << ": " << scores[seed] << '\n';
                 mtx.unlock();
             }
-        });
+            });
     }
 #else
     for (int seed = seed_begin; seed < seed_begin + num_seed; seed++) {
