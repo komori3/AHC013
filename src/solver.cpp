@@ -352,13 +352,13 @@ struct State {
         memset(moves, -1, sizeof(std::pair<short, short>) * (KK * 1));
         for (int i = 1; i <= N; i++) {
             for (int j = 1; j <= N; j++) {
-                if (g[i][j]) {
+                if (g[i][j] > 0) {
                     V++;
                     cells[V] = Cell(V, i, j, g[i][j]);
                     grid[i][j] = V;
                 }
                 else {
-                    grid[i][j] = EMPTY;
+                    grid[i][j] = g[i][j];
                 }
             }
         }
@@ -1355,10 +1355,31 @@ Result solve(InputPtr input) {
         ClusterBuilder cb(input, tb_res);
         auto cb_res = cb.run();
         if (!cb_res.move.empty()) {
+
+            int N = input->N;
+            auto grid = cb.grid;
+            for (int i = 1; i <= N; i++) {
+                for (int j = 1; j <= N; j++) {
+                    if (cb.on_edge[i][j]) grid[i][j] = -1;
+                }
+            }
+            State state(input->N, input->K, grid);
+            {
+                vector<ConnectAction> conn;
+                int rem = input->K * 100 - cb_res.move.size() - cb_res.connect.size(), score = 0;
+                while (rem) {
+                    auto cs = state.get_max_cluster();
+                    if (cs.size() == 1) break;
+                    int nc = state.greedy_connect(cs.front(), conn, rem);
+                    score += nc * (nc - 1) / 2;
+                }
+                for (const auto& co : conn) cb_res.connect.push_back(co);
+            }
+
             int score = calc_score(input, cb_res);
             if (chmax(best_score, score)) {
                 best_res = cb_res;
-                //dump(c, score);
+                dump(c, score);
             }
         }
     }
