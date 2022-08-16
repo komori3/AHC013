@@ -100,7 +100,7 @@ std::istream& operator>>(std::istream& is, T& a) {
 
 std::ostream& operator<<(std::ostream& os, const std::vector<bool>& v) {
     std::string s(v.size(), ' ');
-    for (int i = 0; i < v.size(); i++) s[i] = v[i] + '0';
+    for (int i = 0; i < (int)v.size(); i++) s[i] = v[i] + '0';
     os << s;
     return os;
 }
@@ -177,7 +177,7 @@ struct Xorshift {
     inline int next_int(int mod) { return next() % mod; }
     inline int next_int(int l, int r) { return l + next_int(r - l + 1); }
     inline double next_double() { return next_int() * e; }
-} rnd;
+};
 
 /* shuffle */
 template<typename T>
@@ -470,7 +470,6 @@ struct State {
         int cluster_id[KK + 1] = {};
         int id = 0, max_id = -1, max_nc = -1;
         for (int s = 1; s <= V; s++) {
-            const auto& sc = cells[s];
             if (used[s]) continue;
             id++;
             int nc = 1;
@@ -659,11 +658,11 @@ struct Solver {
         int turn = 0;
         while (buf_size[now_buffer] && turn < K * 100) {
             auto& now_states = sbuf[now_buffer];
-            auto& now_size = sbuf[now_buffer];
+            auto& now_size = buf_size[now_buffer];
             auto& next_states = sbuf[now_buffer ^ 1];
             auto& next_size = buf_size[now_buffer ^ 1]; next_size = 0;
 
-            for (int n = 0; n < std::min(beam_width, buf_size[now_buffer]); n++) {
+            for (int n = 0; n < std::min(beam_width, now_size); n++) {
                 auto& now_state = now_states[ord[n]];
                 auto cands = now_state.enum_moves();
                 shuffle_vector(cands, rnd);
@@ -699,7 +698,7 @@ struct Solver {
         auto states = beam_search(state);
         Result best;
         int best_score = -1;
-        for (int i = 0; i < states.size(); i += 2) {
+        for (int i = 0; i < (int)states.size(); i += 2) {
             auto state = states[i];
             auto [score, res] = state.post_process();
             if (chmax(best_score, score)) {
@@ -734,13 +733,13 @@ struct CumulativeSum2D {
 
     void add(int x, int y, T z) {
         ++x, ++y;
-        if (x >= data.size() || y >= data[0].size()) return;
+        if (x >= (int)data.size() || y >= (int)data[0].size()) return;
         data[x][y] += z;
     }
 
     void build() {
-        for (int i = 1; i < data.size(); i++) {
-            for (int j = 1; j < data[i].size(); j++) {
+        for (int i = 1; i < (int)data.size(); i++) {
+            for (int j = 1; j < (int)data[i].size(); j++) {
                 data[i][j] += data[i][j - 1] + data[i - 1][j] - data[i - 1][j - 1];
             }
         }
@@ -838,6 +837,8 @@ struct TreeBuilder {
         vector<pii> pts_dst;
     };
 
+    Xorshift rnd;
+
     InputPtr input;
     int N, C, V, E;
     Grid<char> grid;
@@ -848,7 +849,7 @@ struct TreeBuilder {
     vector<pii> pts_src;
     vector<pii> pts_dst;
 
-    TreeBuilder(InputPtr input, int C) : input(input), C(C) {}
+    TreeBuilder(InputPtr input, int C, int seed = 0) : input(input), C(C), rnd(seed) {}
 
     Result run() {
         init();
@@ -881,7 +882,8 @@ struct TreeBuilder {
     inline int calc_mst_cost(int u, int v) const {
         auto [ui, uj] = pts_src[u];
         auto [vi, vj] = pts_src[v];
-        int cost1 = std::min(abs(ui - vi), abs(uj - vj));
+        //int cost1 = std::min(abs(ui - vi), abs(uj - vj));
+        int cost1 = abs(ui - vi) + abs(uj - vj);
         int cost2 = cumu.query(std::min(ui, vi), std::min(uj, vj), std::max(ui, vi) + 1, std::max(uj, vj) + 1) - 2;
         return cost1 + cost2;
     }
@@ -906,6 +908,17 @@ struct TreeBuilder {
             if (z1 * z2 < 0) return true;
         }
         return false;
+    }
+
+    bool cross_check(int y1, int x1, int y2, int x2, int y3, int x3, int y4, int x4) {
+        int dy1 = y2 - y1, dx1 = x2 - x1, dy2 = y4 - y3, dx2 = x4 - x3;
+        auto f = [&](int x, int y) { return dy1 * x - dx1 * y + y1 * dx1 - x1 * dy1; };
+        auto g = [&](int x, int y) { return dy2 * x - dx2 * y + y3 * dx2 - x3 * dy2; };
+        int z1 = f(x3, y3), z2 = f(x4, y4);
+        if (z1 * z2 >= 0) return false;
+        z1 = g(x1, y1); z2 = g(x2, y2);
+        if (z1 * z2 >= 0) return false;
+        return true;
     }
 
     void create_mst() {
@@ -1009,6 +1022,19 @@ struct TreeBuilder {
             auto [vi, vj] = pts_dst[v];
             if (ui != vi && uj != vj) return false;
         }
+
+        for (int e1 = 0; e1 + 1 < (int)edges.size(); e1++) {
+            auto [u1, v1] = edges[e1];
+            auto [y1, x1] = pts_dst[u1];
+            auto [y2, x2] = pts_dst[v1];
+            for (int e2 = e1 + 1; e2 < (int)edges.size(); e2++) {
+                auto [u2, v2] = edges[e2];
+                auto [y3, x3] = pts_dst[u2];
+                auto [y4, x4] = pts_dst[v2];
+                if (cross_check(y1, x1, y2, x2, y3, x3, y4, x4)) return false;
+            }
+        }
+
         return true;
     }
 
@@ -1034,7 +1060,7 @@ struct ClusterBuilder {
         edges(tree_res.edges), pts_src(tree_res.pts_src), pts_dst(tree_res.pts_dst), smap(), on_edge()
     {
         memset(smap.data(), -1, sizeof(int) * NN * NN);
-        for (int id = 0; id < pts_src.size(); id++) {
+        for (int id = 0; id < (int)pts_src.size(); id++) {
             auto [i, j] = pts_src[id];
             smap[i][j] = id;
         }
@@ -1063,7 +1089,7 @@ struct ClusterBuilder {
         bool nmap[NN][NN] = {};
         int tmap[NN][NN] = {};
         UnionFind tree(pts_dst.size());
-        for (int id = 0; id < pts_dst.size(); id++) {
+        for (int id = 0; id < (int)pts_dst.size(); id++) {
             auto [i, j] = pts_dst[id];
             nmap[i][j] = true;
             tmap[i][j] = id;
@@ -1132,9 +1158,10 @@ struct ClusterBuilder {
             if (ok) break;
         }
         if (!ok) return {};
+        //dump(moves.size());
         //vis(N, C, grid, edges, pts_src, pts_dst);
         auto connects = connect();
-        if (moves.size() + connects.size() > input->K * 100) return {};
+        if (int(moves.size() + connects.size()) > input->K * 100) return {};
         return { moves, connects };
     }
 
@@ -1181,7 +1208,7 @@ struct ClusterBuilder {
                 i -= di[d]; j -= dj[d]; d = prev[i][j];
                 path.emplace_back(i, j);
             }
-            for (int i = 0; i + 1 < path.size(); i++) {
+            for (int i = 0; i + 1 < (int)path.size(); i++) {
                 auto [i2, j2] = path[i];
                 auto [i1, j1] = path[i + 1];
                 if (!grid[i1][j1]) continue;
@@ -1217,7 +1244,7 @@ struct ClusterBuilder {
             si += di[mind]; sj += dj[mind];
             path.emplace_back(si, sj);
         }
-        for (int pid = 0; pid + 1 < path.size(); pid++) {
+        for (int pid = 0; pid + 1 < (int)path.size(); pid++) {
             auto [i1, j1] = path[pid];
             auto [i2, j2] = path[pid + 1];
             if (!grid[i2][j2]) {
@@ -1237,7 +1264,7 @@ struct ClusterBuilder {
     }
 
     void hard_move() {
-        for (int id = 0; id < pts_src.size(); id++) {
+        for (int id = 0; id < (int)pts_src.size(); id++) {
             if (pts_src[id] == pts_dst[id]) continue;
             hard_move(id);
         }
@@ -1280,7 +1307,7 @@ struct ClusterBuilder {
                         path.emplace_back(i, j);
                     }
                     reverse(path.begin(), path.end());
-                    for (int i = 0; i + 1 < path.size(); i++) {
+                    for (int i = 0; i + 1 < (int)path.size(); i++) {
                         auto [i1, j1] = path[i];
                         auto [i2, j2] = path[i + 1];
                         move(i1, j1, i2, j2);
@@ -1296,7 +1323,7 @@ struct ClusterBuilder {
 
         bool update = false;
 
-        for (int id = 0; id < pts_src.size(); id++) {
+        for (int id = 0; id < (int)pts_src.size(); id++) {
             if (pts_src[id] == pts_dst[id]) continue;
             auto [si, sj] = pts_src[id];
             auto [ti, tj] = pts_dst[id];
@@ -1330,7 +1357,7 @@ struct ClusterBuilder {
                     path.emplace_back(i, j);
                 }
                 reverse(path.begin(), path.end());
-                for (int i = 0; i + 1 < path.size(); i++) {
+                for (int i = 0; i + 1 < (int)path.size(); i++) {
                     auto [i1, j1] = path[i];
                     auto [i2, j2] = path[i + 1];
                     move(i1, j1, i2, j2);
@@ -1379,7 +1406,7 @@ Result solve(InputPtr input) {
             int score = calc_score(input, cb_res);
             if (chmax(best_score, score)) {
                 best_res = cb_res;
-                dump(c, score);
+                //dump(c, score);
             }
         }
     }
@@ -1400,17 +1427,20 @@ Result solve(InputPtr input) {
 }
 
 #ifdef _MSC_VER
-void batch_test(int seed_begin = 0, int num_seed = 100) {
+void batch_test(int seed_begin = 0, int num_seed = 2000, int step = 20) {
 
     constexpr int batch_size = 8;
+    constexpr int block_size = batch_size * 20;
     int seed_end = seed_begin + num_seed;
 
     vector<int> scores(num_seed);
 #if 1
     concurrency::critical_section mtx;
-    for (int batch_begin = seed_begin; batch_begin < seed_end; batch_begin += batch_size) {
-        int batch_end = std::min(batch_begin + batch_size, seed_end);
-        concurrency::parallel_for(batch_begin, batch_end, [&mtx, &scores](int seed) {
+    for (int batch_begin = seed_begin; batch_begin < seed_end; batch_begin += block_size) {
+        int batch_end = std::min(batch_begin + block_size, seed_end);
+        vector<int> seeds;
+        for (int seed = batch_begin; seed < batch_end; seed += step) seeds.push_back(seed);
+        concurrency::parallel_for_each(seeds.begin(), seeds.end(), [&mtx, &scores](int seed) {
             std::ifstream ifs(format("tools/in/%04d.txt", seed));
             std::istream& in = ifs;
             std::ofstream ofs(format("tools/out/%04d.txt", seed));
@@ -1450,15 +1480,15 @@ void batch_test(int seed_begin = 0, int num_seed = 100) {
 #endif
 
 
-int main(int argc, char** argv) {
+int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 
 #ifdef HAVE_OPENCV_HIGHGUI
     cv::utils::logging::setLogLevel(cv::utils::logging::LogLevel::LOG_LEVEL_SILENT);
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools\in\0010.txt)");
-    std::ofstream ofs(R"(tools\out\0010.txt)");
+    std::ifstream ifs(R"(tools\in\0000.txt)");
+    std::ofstream ofs(R"(tools\out\0000.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
