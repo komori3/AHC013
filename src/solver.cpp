@@ -466,6 +466,19 @@ struct State {
     }
 
     vector<int> get_max_cluster() const {
+
+        class FastQueue {
+            int front, back;
+            int v[1 << 12];
+        public:
+            FastQueue() : front(0), back(0) {}
+            inline bool empty() { return front == back; }
+            inline void push(int x) { v[front++] = x; }
+            inline int pop() { return v[back++]; }
+            inline void reset() { front = back = 0; }
+            inline int size() { return front - back; }
+        } fqu;
+
         bool used[KK + 1] = {};
         int cluster_id[KK + 1] = {};
         int id = 0, max_id = -1, max_nc = -1;
@@ -473,14 +486,14 @@ struct State {
             if (used[s]) continue;
             id++;
             int nc = 1;
-            std::queue<int> qu({ s });
+            fqu.push(s);
             used[s] = true;
             cluster_id[s] = id;
-            while (!qu.empty()) {
-                auto u = qu.front(); qu.pop();
+            while (!fqu.empty()) {
+                auto u = fqu.pop();;
                 for (int v : nexts[u]) {
                     if (v != -1 && !used[v] && cells[u].color == cells[v].color) {
-                        qu.push(v);
+                        fqu.push(v);
                         used[v] = true;
                         cluster_id[v] = id;
                         nc++;
@@ -596,28 +609,39 @@ int calc_score(InputPtr input, const Result& res) {
         std::swap(field[r.before_row][r.before_col], field[r.after_row][r.after_col]);
     }
 
-    UnionFind_ uf;
-    for (auto r : res.connect) {
-        pii p1(r.c1_row, r.c1_col), p2(r.c2_row, r.c2_col);
-        uf.unite(p1, p2);
+    int V = 0;
+    Grid<short> idmap;
+    memset(idmap.data(), -1, sizeof(short) * NN * NN);
+    for (int i = 1; i <= N; i++) {
+        for (int j = 0; j <= N; j++) {
+            if (field[i][j]) {
+                idmap[i][j] = V++;
+            }
+        }
     }
 
     vector<pii> computers;
     for (int i = 1; i <= N; i++) {
         for (int j = 1; j <= N; j++) {
             if (field[i][j]) {
+                idmap[i][j] = V++;
                 computers.emplace_back(i, j);
             }
         }
     }
 
+    UnionFind uf(V);
+    for (auto [i1, j1, i2, j2] : res.connect) {
+        uf.unite(idmap[i1][j1], idmap[i2][j2]);
+    }
+
     int score = 0;
     for (int i = 0; i < (int)computers.size(); i++) {
         for (int j = i + 1; j < (int)computers.size(); j++) {
-            auto c1 = computers[i];
-            auto c2 = computers[j];
-            if (uf.find(c1) == uf.find(c2)) {
-                score += (field[c1.first][c1.second] == field[c2.first][c2.second]) ? 1 : -1;
+            auto [i1, j1] = computers[i];
+            auto [i2, j2] = computers[j];
+            if (uf.find(idmap[i1][j1]) == uf.find(idmap[i2][j2])) {
+                score += (field[i1][j1] == field[i2][j2]) ? 1 : -1;
             }
         }
     }
@@ -625,90 +649,74 @@ int calc_score(InputPtr input, const Result& res) {
     return std::max(score, 0);
 }
 
-struct Solver;
-using SolverPtr = std::shared_ptr<Solver>;
-struct Solver {
-
-    Timer timer;
+vector<State> beam_search(InputPtr input, State init_state) {
+    
     Xorshift rnd;
 
-    InputPtr input;
+    constexpr int beam_width = 3, degree = 100;
+    State sbuf[2][beam_width * degree];
+    int ord[beam_width * degree];
+    int scores[beam_width * degree];
 
-    int N, K;
-    int action_count_limit;
-    Grid<char> grid;
+    int now_buffer = 0;
+    int buf_size[2] = {};
 
-    Solver(InputPtr input) : input(input), N(input->N), K(input->K), action_count_limit(K * 100), grid(input->grid) {}
+    sbuf[now_buffer][0] = init_state;
+    ord[0] = 0;
+    buf_size[now_buffer]++;
 
-    vector<State> beam_search(State init_state) {
-        constexpr int beam_width = 3, degree = 100;
-        State sbuf[2][beam_width * degree];
-        int ord[beam_width * degree];
-        int scores[beam_width * degree];
+    vector<State> res({ init_state });
 
-        int now_buffer = 0;
-        int buf_size[2] = {};
+    int turn = 0;
+    while (buf_size[now_buffer] && turn < input->K * 100) {
+        auto& now_states = sbuf[now_buffer];
+        auto& now_size = buf_size[now_buffer];
+        auto& next_states = sbuf[now_buffer ^ 1];
+        auto& next_size = buf_size[now_buffer ^ 1]; next_size = 0;
 
-        sbuf[now_buffer][0] = init_state;
-        ord[0] = 0;
-        buf_size[now_buffer]++;
-
-        vector<State> res({ init_state });
-
-        int turn = 0;
-        while (buf_size[now_buffer] && turn < K * 100) {
-            auto& now_states = sbuf[now_buffer];
-            auto& now_size = buf_size[now_buffer];
-            auto& next_states = sbuf[now_buffer ^ 1];
-            auto& next_size = buf_size[now_buffer ^ 1]; next_size = 0;
-
-            for (int n = 0; n < std::min(beam_width, now_size); n++) {
-                auto& now_state = now_states[ord[n]];
-                auto cands = now_state.enum_moves();
-                shuffle_vector(cands, rnd);
-                for (int i = 0; i < std::min(degree, (int)cands.size()); i++) {
-                    auto [id, d] = cands[i];
-                    auto& next_state = next_states[next_size];
-                    next_state = now_state;
-                    next_state.move(id, d);
-                    scores[next_size] = next_state.eval();
-                    next_size++;
-                }
-            }
-
-            if (!next_size) break;
-            std::iota(ord, ord + next_size, 0);
-            std::sort(ord, ord + next_size, [&scores](int a, int b) {
-                return scores[a] > scores[b];
-                });
-
-            //dump(next_states[ord[0]].eval());
-
-            res.push_back(next_states[ord[0]]);
-
-            now_buffer ^= 1;
-            turn++;
-        }
-        //dump(turn, best_score);
-        return res;
-    }
-
-    Result solve() {
-        State state(N, K, grid);
-        auto states = beam_search(state);
-        Result best;
-        int best_score = -1;
-        for (int i = 0; i < (int)states.size(); i += 2) {
-            auto state = states[i];
-            auto [score, res] = state.post_process();
-            if (chmax(best_score, score)) {
-                best = res;
+        for (int n = 0; n < std::min(beam_width, now_size); n++) {
+            auto& now_state = now_states[ord[n]];
+            auto cands = now_state.enum_moves();
+            shuffle_vector(cands, rnd);
+            for (int i = 0; i < std::min(degree, (int)cands.size()); i++) {
+                auto [id, d] = cands[i];
+                auto& next_state = next_states[next_size];
+                next_state = now_state;
+                next_state.move(id, d);
+                scores[next_size] = next_state.eval();
+                next_size++;
             }
         }
-        return best;
-    }
 
-};
+        if (!next_size) break;
+        std::iota(ord, ord + next_size, 0);
+        std::sort(ord, ord + next_size, [&scores](int a, int b) {
+            return scores[a] > scores[b];
+            });
+
+        //dump(next_states[ord[0]].eval());
+
+        res.push_back(next_states[ord[0]]);
+
+        now_buffer ^= 1;
+        turn++;
+    }
+    //dump(turn, best_score);
+    return res;
+}
+
+Result post_process(const vector<State>& states) {
+    Result best;
+    int best_score = -1;
+    for (int i = 0; i < (int)states.size(); i += 2) {
+        auto state = states[i];
+        auto [score, res] = state.post_process();
+        if (chmax(best_score, score)) {
+            best = res;
+        }
+    }
+    return best;
+}
 
 void print_answer(std::ostream& out, const Result& res) {
     out << res.move.size() << endl;
@@ -883,8 +891,10 @@ struct TreeBuilder {
         auto [ui, uj] = pts_src[u];
         auto [vi, vj] = pts_src[v];
         //int cost1 = std::min(abs(ui - vi), abs(uj - vj));
-        int cost1 = abs(ui - vi) + abs(uj - vj);
-        int cost2 = cumu.query(std::min(ui, vi), std::min(uj, vj), std::max(ui, vi) + 1, std::max(uj, vj) + 1) - 2;
+        int cost1 = abs(ui - vi) /** abs(ui - vi)*/ + abs(uj - vj) /** abs(uj - vj)*/;
+        //int cost1 = (abs(ui - vi) + abs(uj - vj)) * (abs(ui - vi) + abs(uj - vj));
+        //int cost2 = cumu.query(std::min(ui, vi), std::min(uj, vj), std::max(ui, vi) + 1, std::max(uj, vj) + 1) - 2;
+        int cost2 = 0;
         return cost1 + cost2;
     }
 
@@ -923,17 +933,17 @@ struct TreeBuilder {
 
     void create_mst() {
 
-        vector<std::tuple<int, int, int>> cands;
+        vector<std::tuple<int, int, int, int>> cands;
         for (int u = 0; u < V - 1; u++) {
             for (int v = u + 1; v < V; v++) {
-                cands.emplace_back(calc_mst_cost(u, v), u, v);
+                cands.emplace_back(calc_mst_cost(u, v), rnd.next_int(), u, v);
             }
         }
         std::sort(cands.begin(), cands.end());
 
         UnionFind tree(V);
         G.resize(V);
-        for (auto [c, u, v] : cands) {
+        for (auto [c, _, u, v] : cands) {
             if (!tree.same(u, v) && !cross_check(u, v)) {
                 edges.emplace_back(u, v);
                 tree.unite(u, v);
@@ -971,7 +981,7 @@ struct TreeBuilder {
             return endTemp + (startTemp - endTemp) * (T - t) / T;
         };
 
-        int num_loop = 1000000;
+        int num_loop = 300000;
         vector<int> dirs({ 0, 1, 2, 3 });
         for (int loop = 0; loop < num_loop; loop++) {
 
@@ -1005,7 +1015,7 @@ struct TreeBuilder {
             }
             diff += calc_move_cost(pts_src[u].first, pts_src[u].second, ui, uj);
 
-            double temp = get_temp(2.0, 0.0, loop, num_loop);
+            double temp = get_temp(1.0, 0.0, loop, num_loop);
             double prob = exp(-diff / temp);
 
             if (rnd.next_double() < prob) {
@@ -1373,54 +1383,68 @@ struct ClusterBuilder {
 
 Result solve(InputPtr input) {
 
+    Timer timer;
+
     int best_score = -1;
     Result best_res;
-    for (int c = 1; c <= input->K; c++) {
-        TreeBuilder tb(input, c);
-        auto tb_res = tb.run();
-        if (!tb_res.succeed) continue;
-        ClusterBuilder cb(input, tb_res);
-        auto cb_res = cb.run();
-        if (!cb_res.move.empty()) {
 
-            int N = input->N;
-            auto grid = cb.grid;
-            for (int i = 1; i <= N; i++) {
-                for (int j = 1; j <= N; j++) {
-                    if (cb.on_edge[i][j]) grid[i][j] = -1;
-                }
-            }
-            State state(input->N, input->K, grid);
-            {
-                vector<ConnectAction> conn;
-                int rem = input->K * 100 - cb_res.move.size() - cb_res.connect.size(), score = 0;
-                while (rem) {
-                    auto cs = state.get_max_cluster();
-                    if (cs.size() == 1) break;
-                    int nc = state.greedy_connect(cs.front(), conn, rem);
-                    score += nc * (nc - 1) / 2;
-                }
-                for (const auto& co : conn) cb_res.connect.push_back(co);
-            }
-
-            int score = calc_score(input, cb_res);
-            if (chmax(best_score, score)) {
-                best_res = cb_res;
-                //dump(c, score);
-            }
-        }
-    }
-
-    Solver solver(input);
     {
-        auto ret = solver.solve();
+        State state(input->N, input->K, input->grid);
+        auto states = beam_search(input, state);
+        auto ret = post_process(states);
         int score = calc_score(input, ret);
         if (chmax(best_score, score)) {
             best_res = ret;
-            //dump(score);
+            dump(score);
         }
     }
 
+    Xorshift gen_rnd;
+    while(true) {
+        for (int c = 1; c <= input->K; c++) {
+            //dump(c);
+            TreeBuilder tb(input, c, gen_rnd.next_int());
+            auto tb_res = tb.run();
+            //dump(timer.elapsed_ms());
+            if (!tb_res.succeed) continue;
+            ClusterBuilder cb(input, tb_res);
+            auto cb_res = cb.run();
+            //dump(timer.elapsed_ms());
+            if (!cb_res.move.empty()) {
+
+                int N = input->N;
+                auto grid = cb.grid;
+                for (int i = 1; i <= N; i++) {
+                    for (int j = 1; j <= N; j++) {
+                        if (cb.on_edge[i][j]) grid[i][j] = -1;
+                    }
+                }
+                State state(input->N, input->K, grid);
+                {
+                    vector<ConnectAction> conn;
+                    int rem = input->K * 100 - cb_res.move.size() - cb_res.connect.size(), score = 0;
+                    while (rem) {
+                        auto cs = state.get_max_cluster();
+                        if (cs.size() == 1) break;
+                        int nc = state.greedy_connect(cs.front(), conn, rem);
+                        score += nc * (nc - 1) / 2;
+                    }
+                    for (const auto& co : conn) cb_res.connect.push_back(co);
+                }
+
+                int score = calc_score(input, cb_res);
+                if (chmax(best_score, score)) {
+                    best_res = cb_res;
+                    //dump(c, score);
+                }
+                //dump(timer.elapsed_ms());
+            }
+            if (timer.elapsed_ms() > 2800) break;
+        }
+        if (timer.elapsed_ms() > 2800) break;
+    }
+
+    //dump(timer.elapsed_ms());
     //dump(best_score);
 
     return best_res;
@@ -1487,8 +1511,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools\in\0000.txt)");
-    std::ofstream ofs(R"(tools\out\0000.txt)");
+    std::ifstream ifs(R"(tools\in\1499.txt)");
+    std::ofstream ofs(R"(tools\out\1499.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
