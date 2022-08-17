@@ -540,18 +540,18 @@ struct State {
         return nc;
     }
 
-    std::pair<int, Result> post_process() {
+    std::pair<int, Result> post_process(int rem) {
         vector<MoveAction> mvs;
         for (int i = 0; i < M; i++) {
             auto [i1, j1, i2, j2] = unpack(moves[i]);
             mvs.emplace_back(i1, j1, i2, j2);
         }
         vector<ConnectAction> conn;
-        int rem = K * 100 - M, score = 0;
-        while (rem) {
+        int crem = rem - M, score = 0;
+        while (crem) {
             auto cs = get_max_cluster();
             if (cs.size() == 1) break;
-            int nc = greedy_connect(cs.front(), conn, rem);
+            int nc = greedy_connect(cs.front(), conn, crem);
             score += nc * (nc - 1) / 2;
         }
         return { score, { mvs, conn } };
@@ -649,8 +649,8 @@ int calc_score(InputPtr input, const Result& res) {
     return std::max(score, 0);
 }
 
-vector<State> beam_search(InputPtr input, State init_state) {
-    
+vector<State> beam_search(State init_state, int max_turn) {
+
     Xorshift rnd;
 
     constexpr int beam_width = 3, degree = 100;
@@ -668,7 +668,7 @@ vector<State> beam_search(InputPtr input, State init_state) {
     vector<State> res({ init_state });
 
     int turn = 0;
-    while (buf_size[now_buffer] && turn < input->K * 100) {
+    while (buf_size[now_buffer] && turn < max_turn) {
         auto& now_states = sbuf[now_buffer];
         auto& now_size = buf_size[now_buffer];
         auto& next_states = sbuf[now_buffer ^ 1];
@@ -705,12 +705,12 @@ vector<State> beam_search(InputPtr input, State init_state) {
     return res;
 }
 
-Result post_process(const vector<State>& states) {
+Result post_process(const vector<State>& states, int rem) {
     Result best;
     int best_score = -1;
     for (int i = 0; i < (int)states.size(); i += 2) {
         auto state = states[i];
-        auto [score, res] = state.post_process();
+        auto [score, res] = state.post_process(rem);
         if (chmax(best_score, score)) {
             best = res;
         }
@@ -857,7 +857,7 @@ struct TreeBuilder {
     vector<pii> pts_src;
     vector<pii> pts_dst;
 
-    TreeBuilder(InputPtr input, int C, int seed = 0) : input(input), C(C), rnd(seed) {}
+    TreeBuilder(InputPtr input, int C, int seed = 0) : rnd(seed), input(input), N(input->N), C(C) {}
 
     Result run() {
         init();
@@ -868,7 +868,6 @@ struct TreeBuilder {
 
     void init() {
 
-        N = input->N;
         V = 0;
         grid = input->grid;
         cumu = CumulativeSum2D<int>(N + 2, N + 2);
@@ -1390,26 +1389,26 @@ Result solve(InputPtr input) {
 
     {
         State state(input->N, input->K, input->grid);
-        auto states = beam_search(input, state);
-        auto ret = post_process(states);
+        auto states = beam_search(state, input->K * 100);
+        auto ret = post_process(states, input->K * 100);
         int score = calc_score(input, ret);
         if (chmax(best_score, score)) {
             best_res = ret;
-            dump(score);
+            //dump(score);
         }
     }
 
     Xorshift gen_rnd;
-    while(true) {
+    while (true) {
         for (int c = 1; c <= input->K; c++) {
-            //dump(c);
+
             TreeBuilder tb(input, c, gen_rnd.next_int());
             auto tb_res = tb.run();
-            //dump(timer.elapsed_ms());
             if (!tb_res.succeed) continue;
+
             ClusterBuilder cb(input, tb_res);
             auto cb_res = cb.run();
-            //dump(timer.elapsed_ms());
+
             if (!cb_res.move.empty()) {
 
                 int N = input->N;
@@ -1420,28 +1419,44 @@ Result solve(InputPtr input) {
                     }
                 }
                 State state(input->N, input->K, grid);
-                {
-                    vector<ConnectAction> conn;
-                    int rem = input->K * 100 - cb_res.move.size() - cb_res.connect.size(), score = 0;
-                    while (rem) {
-                        auto cs = state.get_max_cluster();
-                        if (cs.size() == 1) break;
-                        int nc = state.greedy_connect(cs.front(), conn, rem);
-                        score += nc * (nc - 1) / 2;
-                    }
-                    for (const auto& co : conn) cb_res.connect.push_back(co);
+#if 0
+                vector<ConnectAction> conn;
+                int rem = input->K * 100 - cb_res.move.size() - cb_res.connect.size();
+                while (rem) {
+                    auto cs = state.get_max_cluster();
+                    if (cs.size() == 1) break;
+                    int nc = state.greedy_connect(cs.front(), conn, rem);
                 }
-
+                for (const auto& co : conn) cb_res.connect.push_back(co);
                 int score = calc_score(input, cb_res);
                 if (chmax(best_score, score)) {
                     best_res = cb_res;
                     //dump(c, score);
                 }
+#else
+                //dump(cb_res.move.size(), cb_res.connect.size());
+                int rem = input->K * 100 - cb_res.move.size() - cb_res.connect.size();
+                //dump(rem);
+                auto states = beam_search(state, rem);
+                auto res = post_process(states, rem);
+                for (const auto& m : res.move) cb_res.move.push_back(m);
+                for (const auto& c : res.connect) cb_res.connect.push_back(c);
+
+                int score = calc_score(input, cb_res);
+                //dump(rem, score);
+                if (chmax(best_score, score)) {
+                    best_res = cb_res;
+                    //dump(best_score);
+                }
+                //dump(cb_res.move.size(), cb_res.connect.size());
+                //exit(1);
+#endif
                 //dump(timer.elapsed_ms());
             }
-            if (timer.elapsed_ms() > 2800) break;
+
+            if (timer.elapsed_ms() > 2500) break;
         }
-        if (timer.elapsed_ms() > 2800) break;
+        if (timer.elapsed_ms() > 2500) break;
     }
 
     //dump(timer.elapsed_ms());
@@ -1511,8 +1526,8 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv) {
 #endif
 
 #ifdef _MSC_VER
-    std::ifstream ifs(R"(tools\in\1499.txt)");
-    std::ofstream ofs(R"(tools\out\1499.txt)");
+    std::ifstream ifs(R"(tools\in\1999.txt)");
+    std::ofstream ofs(R"(tools\out\1999.txt)");
     std::istream& in = ifs;
     std::ostream& out = ofs;
 #else
